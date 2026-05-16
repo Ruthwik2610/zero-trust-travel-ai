@@ -40,7 +40,7 @@ rsync -az --delete --stats \
   "${APP_DIR}/" "${SSH_ALIAS}:${REMOTE_DIR}/"
 
 ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cd '${REMOTE_DIR}/backend' && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
-ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cd '${REMOTE_DIR}/frontend' && if [ -f package-lock.json ]; then npm ci; else npm install; fi && NEXT_PUBLIC_BASE_PATH=/travel-ai NEXT_PUBLIC_TRAVEL_API_BASE=/travel-ai TRAVEL_API_INTERNAL_URL=http://127.0.0.1:8100 npm run build"
+ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cd '${REMOTE_DIR}/frontend' && if [ -f package-lock.json ]; then npm ci; else npm install; fi && TRAVEL_API_INTERNAL_URL=http://127.0.0.1:8100 npm run build"
 
 ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "systemctl daemon-reload && systemctl restart '${BACKEND_SERVICE}' && systemctl restart '${FRONTEND_SERVICE}'"
 ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "systemctl status '${BACKEND_SERVICE}' --no-pager"
