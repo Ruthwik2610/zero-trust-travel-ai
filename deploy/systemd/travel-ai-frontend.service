@@ -1,0 +1,20 @@
+[Unit]
+Description=Zero Trust Travel AI Frontend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zero-trust-travel-ai/frontend
+EnvironmentFile=-/opt/zero-trust-travel-ai/.env.frontend
+Environment=PORT=3100
+Environment=HOSTNAME=127.0.0.1
+Environment=TRAVEL_API_INTERNAL_URL=http://127.0.0.1:8100
+Environment=NEXT_PUBLIC_BASE_PATH=/travel-ai
+Environment=NEXT_PUBLIC_TRAVEL_API_BASE=/travel-ai
+ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3100
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+"""Travel AI backend package."""
+
