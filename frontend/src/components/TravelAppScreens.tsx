@@ -11,20 +11,16 @@ import {
   ChevronDown,
   CircleDollarSign,
   Clock3,
-  CreditCard,
   Download,
   FileText,
   Gauge,
   HelpCircle,
   Home,
-  Hotel,
   IdCard,
   KeyRound,
   LayoutDashboard,
   Link2,
   Luggage,
-  MapPin,
-  MessageCircle,
   Moon,
   Plane,
   Send,
@@ -136,7 +132,6 @@ export function LoginScreen() {
   return (
     <main className="login-screen">
       <section className="login-hero">
-        <div className="screen-tag">1. Login Screen</div>
         <ThemeToggle />
         <div className="hero-copy">
           <div className="hero-badge"><Sparkles size={15} /> Enterprise travel intelligence</div>
@@ -155,13 +150,13 @@ export function LoginScreen() {
         <p>Sign in to continue to your travel assistant.</p>
         <label>
           <span>Email address</span>
-          <input defaultValue="vikram.r@unipro.com" type="email" />
+          <input autoComplete="email" placeholder="name@company.com" type="email" />
         </label>
         <label>
           <span>Password</span>
           <div className="password-field">
             <KeyRound size={16} />
-            <input defaultValue="enterprise" type="password" />
+            <input autoComplete="current-password" placeholder="Enter your password" type="password" />
           </div>
         </label>
         <div className="login-options">
@@ -169,7 +164,7 @@ export function LoginScreen() {
             <input defaultChecked type="checkbox" />
             Remember me
           </label>
-          <a href="#">Forgot Password?</a>
+          <button className="link-button" type="button">Forgot password?</button>
         </div>
         <Link className="primary-cta" href="/dashboard">Sign in</Link>
         <div className="divider"><span>or</span></div>
@@ -214,14 +209,14 @@ export function TravelerDashboard() {
                 <p>Indian citizens require a visa to travel to South Africa.</p>
               </div>
             </div>
-            <a href="#">View details</a>
+            <Link href="/planner">View details</Link>
           </section>
 
           <section className="app-card">
             <h2>My Visas</h2>
             <VisaRow country="South Africa" type="Visitor Visa" date="12 Dec 2026" status="Valid" />
             <VisaRow country="UK" type="UK Standard Visitor" date="45 days" status="Expiring Soon" warning />
-            <a href="#">View all visas</a>
+            <Link href="/dashboard">View all visas</Link>
           </section>
 
           <section className="app-card budget-card">
@@ -233,7 +228,7 @@ export function TravelerDashboard() {
               <span>Used ₹70,000</span>
               <span>Available ₹50,000</span>
             </div>
-            <a href="#">View policy</a>
+            <Link href="/dashboard">View policy</Link>
           </section>
 
           <section className="app-card trip-mini-card">
@@ -246,9 +241,9 @@ export function TravelerDashboard() {
             <h2>Quick Actions</h2>
             <div>
               <Link href="/planner"><Plane size={15} /> Plan New Trip</Link>
-              <a href="#"><Luggage size={15} /> My Bookings</a>
-              <a href="#"><FileText size={15} /> Expense Reports</a>
-              <a href="#"><IdCard size={15} /> Visa Documents</a>
+              <Link href="/dashboard"><Luggage size={15} /> My Bookings</Link>
+              <Link href="/dashboard"><FileText size={15} /> Expense Reports</Link>
+              <Link href="/dashboard"><IdCard size={15} /> Visa Documents</Link>
             </div>
           </section>
 
@@ -331,13 +326,15 @@ export function TripPlannerScreen() {
               <time>10:{index + 1}1 AM</time>
             </article>
           ))}
-          <article className="flight-strip">
+          <article className="flight-strip" aria-label="Flight route HYD to JNB and JNB to HYD">
             <Plane size={18} />
-            <strong>JNB</strong>
+            <strong>HYD</strong>
             <span>10 Jun</span>
             <ArrowText />
             <strong>JNB</strong>
             <span>17 Jun</span>
+            <ArrowText />
+            <strong>HYD</strong>
             <strong>₹1,20,000</strong>
           </article>
           <article className="chat-message final">
@@ -392,7 +389,7 @@ export function TripPlannerScreen() {
               </div>
             </article>
           ))}
-          <a href="#">View more hotels</a>
+          <Link href="/planner">View more hotels</Link>
         </div>
       </section>
 
@@ -427,7 +424,7 @@ function ArrowText() {
 
 function RouteLine({ from, to, date }: { from: string; to: string; date: string }) {
   return (
-    <div className="route-line">
+    <div className="route-line" aria-label={`${from} to ${to}`}>
       <strong>{from} <ArrowText /> {to}</strong>
       <span>{date}</span>
     </div>
@@ -440,13 +437,13 @@ export function AdminDashboard() {
       <aside className="admin-sidebar">
         <UniproLogo />
         <nav aria-label="Admin navigation">
-          <a className="active" href="#"><LayoutDashboard size={17} /> Overview</a>
-          <a href="#"><Users size={17} /> Users</a>
-          <a href="#"><Building2 size={17} /> Company Policy</a>
-          <a href="#"><CheckCircle2 size={17} /> Approvals <span>12</span></a>
-          <a href="#"><FileText size={17} /> Reports</a>
-          <a href="#"><Gauge size={17} /> Audit Logs</a>
-          <a href="#"><Settings size={17} /> Settings</a>
+          <Link className="active" href="/admin"><LayoutDashboard size={17} /> Overview</Link>
+          <Link href="/admin"><Users size={17} /> Users</Link>
+          <Link href="/admin"><Building2 size={17} /> Company Policy</Link>
+          <Link href="/admin"><CheckCircle2 size={17} /> Approvals <span>12</span></Link>
+          <Link href="/admin"><FileText size={17} /> Reports</Link>
+          <Link href="/admin"><Gauge size={17} /> Audit Logs</Link>
+          <Link href="/admin"><Settings size={17} /> Settings</Link>
         </nav>
       </aside>
       <section className="admin-main">
@@ -462,7 +459,15 @@ export function AdminDashboard() {
           <section className="app-card user-overview">
             <h2>Users & Travelers Overview</h2>
             <div className="donut-card">
-              <div className="donut" />
+              <AccessibleDonutChart
+                label="Traveler role distribution"
+                segments={[
+                  { value: 196, color: "var(--brand)" },
+                  { value: 36, color: "var(--brand-2)" },
+                  { value: 28, color: "var(--violet)" },
+                  { value: 12, color: "var(--warning)" }
+                ]}
+              />
               <ul>
                 <li><span /> Travelers <strong>196</strong></li>
                 <li><span /> Travel Managers <strong>36</strong></li>
@@ -475,7 +480,16 @@ export function AdminDashboard() {
           <section className="app-card spend-category">
             <h2>Spend by Category (YTD)</h2>
             <div className="donut-card">
-              <div className="donut multi" />
+              <AccessibleDonutChart
+                label="Travel spend by category"
+                segments={[
+                  { value: 46, color: "var(--brand)" },
+                  { value: 20, color: "var(--brand-2)" },
+                  { value: 13, color: "var(--success)" },
+                  { value: 11, color: "var(--warning)" },
+                  { value: 10, color: "var(--violet)" }
+                ]}
+              />
               <ul>
                 <li>Flights <strong>46%</strong></li>
                 <li>Hotels <strong>20%</strong></li>
@@ -522,14 +536,43 @@ export function AdminDashboard() {
 
           <section className="app-card quick-actions admin-actions">
             <h2>Quick Actions</h2>
-            <a href="#"><Settings size={15} /> Add / Update Policy</a>
-            <a href="#"><Users size={15} /> Manage Users & Roles</a>
-            <a href="#"><BarChart3 size={15} /> View Spend Analytics</a>
-            <a href="#"><WalletCards size={15} /> Budget Allocation</a>
-            <a href="#"><FileText size={15} /> Generate Report</a>
+            <Link href="/admin"><Settings size={15} /> Add / Update Policy</Link>
+            <Link href="/admin"><Users size={15} /> Manage Users & Roles</Link>
+            <Link href="/admin"><BarChart3 size={15} /> View Spend Analytics</Link>
+            <Link href="/admin"><WalletCards size={15} /> Budget Allocation</Link>
+            <Link href="/admin"><FileText size={15} /> Generate Report</Link>
           </section>
         </div>
       </section>
     </main>
+  );
+}
+
+function AccessibleDonutChart({ label, segments }: { label: string; segments: Array<{ value: number; color: string }> }) {
+  const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+  let offset = 25;
+
+  return (
+    <svg className="donut-chart" role="img" viewBox="0 0 42 42" aria-label={label}>
+      <circle className="donut-ring" cx="21" cy="21" r="15.915" />
+      {segments.map((segment, index) => {
+        const share = (segment.value / total) * 100;
+        const strokeDasharray = `${share} ${100 - share}`;
+        const strokeDashoffset = offset;
+        offset -= share;
+        return (
+          <circle
+            className="donut-segment"
+            cx="21"
+            cy="21"
+            key={`${segment.color}-${index}`}
+            r="15.915"
+            stroke={segment.color}
+            strokeDasharray={strokeDasharray}
+            strokeDashoffset={strokeDashoffset}
+          />
+        );
+      })}
+    </svg>
   );
 }

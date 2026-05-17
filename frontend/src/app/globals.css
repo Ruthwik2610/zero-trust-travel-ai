@@ -1,22 +1,22 @@
 :root {
   color-scheme: light;
-  --bg: #f6f9fe;
-  --bg-2: #eaf2ff;
-  --surface: rgba(255, 255, 255, 0.88);
+  --bg: #f5f8fc;
+  --bg-2: #edf4fb;
+  --surface: rgba(255, 255, 255, 0.92);
   --surface-solid: #ffffff;
-  --surface-soft: #f3f7fd;
-  --text: #091833;
-  --muted: #65738a;
-  --line: rgba(20, 57, 105, 0.12);
-  --brand: #075cf8;
-  --brand-2: #10a8d8;
-  --brand-3: #0b2d62;
-  --success: #0b9f6a;
-  --warning: #e58a00;
-  --danger: #d9364f;
-  --violet: #7162f4;
-  --shadow: 0 20px 60px rgba(14, 42, 84, 0.13);
-  --shadow-soft: 0 10px 30px rgba(14, 42, 84, 0.08);
+  --surface-soft: #f7faff;
+  --text: #101a2f;
+  --muted: #657085;
+  --line: rgba(22, 37, 61, 0.12);
+  --brand: #155eef;
+  --brand-2: #0ea5d8;
+  --brand-3: #102a56;
+  --success: #07875f;
+  --warning: #b86e00;
+  --danger: #c93652;
+  --violet: #6658d3;
+  --shadow: 0 20px 50px rgba(18, 41, 73, 0.11);
+  --shadow-soft: 0 10px 24px rgba(18, 41, 73, 0.07);
   --radius: 8px;
 }
 
@@ -52,10 +52,7 @@ body {
 }
 
 body {
-  background:
-    radial-gradient(circle at 12% 8%, rgba(7, 92, 248, 0.16), transparent 30%),
-    radial-gradient(circle at 88% 4%, rgba(16, 168, 216, 0.16), transparent 26%),
-    linear-gradient(135deg, var(--bg), var(--bg-2));
+  background: linear-gradient(135deg, var(--bg), var(--bg-2));
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
@@ -78,7 +75,7 @@ a,
 input,
 select,
 textarea {
-  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease, transform 180ms ease, opacity 180ms ease;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
 }
 
 button:focus-visible,
@@ -95,54 +92,19 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(420px, 0.92fr);
   gap: 0;
-  padding: 18px;
+  padding: 20px;
 }
 
 .login-hero {
   position: relative;
   overflow: hidden;
-  min-height: calc(100vh - 36px);
-  border-radius: 16px;
+  min-height: calc(100vh - 40px);
+  border-radius: 8px;
   background:
-    linear-gradient(90deg, rgba(5, 29, 73, 0.82), rgba(5, 40, 92, 0.36), rgba(255, 255, 255, 0.04)),
+    linear-gradient(90deg, rgba(7, 24, 56, 0.9), rgba(18, 52, 94, 0.56), rgba(18, 52, 94, 0.08)),
     url("https://images.unsplash.com/photo-1436491865332-7a61a109cc05?auto=format&fit=crop&w=1800&q=85") center / cover;
   color: #ffffff;
   box-shadow: var(--shadow);
-}
-
-.login-hero::before,
-.login-hero::after {
-  content: "";
-  position: absolute;
-  inset: auto 7% 12% auto;
-  width: 42%;
-  aspect-ratio: 1;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 999px;
-  animation: float-slow 9s ease-in-out infinite;
-}
-
-.login-hero::after {
-  inset: 18% auto auto 48%;
-  width: 22%;
-  animation-delay: -2s;
-}
-
-.screen-tag {
-  position: absolute;
-  top: 18px;
-  left: 18px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 7px 14px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #0669ff, #0446d9);
-  color: #fff;
-  font-size: 0.78rem;
-  font-weight: 900;
-  text-transform: uppercase;
 }
 
 .login-hero .theme-toggle {
@@ -219,7 +181,6 @@ textarea:focus-visible {
   box-shadow: var(--shadow);
   padding: clamp(26px, 4%, 44px);
   backdrop-filter: blur(24px);
-  animation: rise-in 520ms ease both;
 }
 
 .login-card h2,
@@ -331,7 +292,8 @@ textarea {
 }
 
 .login-options a,
-.app-card a {
+.app-card a,
+.link-button {
   color: var(--brand);
   font-weight: 850;
 }
@@ -343,7 +305,8 @@ textarea {
 .ghost-icon,
 .profile-chip,
 .preferences-card button,
-.chip-row button {
+.chip-row button,
+.link-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -362,11 +325,17 @@ textarea {
 }
 
 .primary-cta:hover,
-.metric-card:hover,
-.app-card:hover,
-.summary-card:hover,
-.chat-message:hover {
-  transform: translateY(-2px);
+.microsoft-button:hover,
+.outline-action:hover,
+.theme-toggle:hover,
+.ghost-icon:hover,
+.profile-chip:hover,
+.preferences-card button:hover,
+.chip-row button:hover,
+.link-button:hover,
+.quick-actions a:hover,
+.admin-actions a:hover {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 12%, transparent);
 }
 
 .divider {
@@ -391,11 +360,21 @@ textarea {
 .ghost-icon,
 .profile-chip,
 .preferences-card button,
-.chip-row button {
+.chip-row button,
+.link-button {
   min-height: 42px;
   border: 1px solid var(--line);
   background: var(--surface-solid);
   color: var(--text);
+}
+
+.link-button {
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--brand);
+  box-shadow: none;
 }
 
 .microsoft-mark {
@@ -428,7 +407,7 @@ textarea {
 }
 
 .admin-sidebar {
-  background: linear-gradient(180deg, #032755, #021730);
+  background: linear-gradient(180deg, #092b5b, #061a36);
   color: #eaf4ff;
 }
 
@@ -555,7 +534,6 @@ textarea {
   gap: 4px 10px;
   min-height: 116px;
   padding: 18px;
-  animation: rise-in 420ms ease both;
 }
 
 .metric-card svg {
@@ -972,21 +950,25 @@ textarea {
   gap: 22px;
 }
 
-.donut {
+.donut-chart {
   flex: 0 0 132px;
   width: 132px;
   height: 132px;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle, var(--surface-solid) 0 48%, transparent 49%),
-    conic-gradient(var(--brand) 0 58%, var(--brand-2) 58% 75%, var(--violet) 75% 88%, var(--warning) 88% 100%);
-  box-shadow: inset 0 0 0 1px var(--line);
+  transform: rotate(-90deg);
 }
 
-.donut.multi {
-  background:
-    radial-gradient(circle, var(--surface-solid) 0 48%, transparent 49%),
-    conic-gradient(#075cf8 0 46%, #10a8d8 46% 66%, #16b884 66% 79%, #f49b2e 79% 90%, #8c78ff 90% 100%);
+.donut-ring,
+.donut-segment {
+  fill: none;
+  stroke-width: 7;
+}
+
+.donut-ring {
+  stroke: color-mix(in srgb, var(--brand) 9%, var(--surface-solid));
+}
+
+.donut-segment {
+  stroke-linecap: butt;
 }
 
 .donut-card ul {
@@ -1040,27 +1022,6 @@ th {
 
 .alerts-card svg {
   color: var(--warning);
-}
-
-@keyframes rise-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes float-slow {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0);
-  }
-  50% {
-    transform: translate3d(-14px, 18px, 0);
-  }
 }
 
 @media (max-width: 1120px) {
