@@ -1,4 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AdminDashboard, LoginScreen, TravelerDashboard, TripPlannerScreen } from "../TravelAppScreens";
@@ -10,6 +12,15 @@ describe("Unipro Travel product screens", () => {
     expect(screen.getByText("Smarter Travel. Seamless Experiences.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/dashboard");
     expect(screen.getByRole("button", { name: /Switch to/i })).toBeInTheDocument();
+  });
+
+  it("keeps login hero and form on the same integrated auth surface", () => {
+    const css = readFileSync(join(process.cwd(), "src/app/globals.css"), "utf8");
+
+    expect(css).toContain(".login-screen::before");
+    expect(css).toContain("--auth-panel");
+    expect(css).toMatch(/\.login-hero[\s\S]*background:\s*var\(--auth-panel\)/);
+    expect(css).toMatch(/\.login-card[\s\S]*background:\s*var\(--auth-panel-strong\)/);
   });
 
   it("renders the traveler dashboard widgets", () => {

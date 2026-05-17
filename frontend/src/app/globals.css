@@ -18,6 +18,12 @@
   --shadow: 0 20px 50px rgba(18, 41, 73, 0.11);
   --shadow-soft: 0 10px 24px rgba(18, 41, 73, 0.07);
   --radius: 8px;
+  --auth-panel: rgba(11, 32, 68, 0.52);
+  --auth-panel-strong: rgba(248, 251, 255, 0.18);
+  --auth-border: rgba(232, 241, 255, 0.26);
+  --auth-text: #f8fbff;
+  --auth-muted: rgba(232, 241, 255, 0.78);
+  --auth-field: rgba(255, 255, 255, 0.92);
 }
 
 :root[data-theme="dark"] {
@@ -39,6 +45,12 @@
   --violet: #a99bff;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
   --shadow-soft: 0 14px 34px rgba(0, 0, 0, 0.28);
+  --auth-panel: rgba(5, 18, 40, 0.62);
+  --auth-panel-strong: rgba(8, 24, 52, 0.72);
+  --auth-border: rgba(208, 228, 255, 0.2);
+  --auth-text: #f8fbff;
+  --auth-muted: rgba(224, 238, 255, 0.76);
+  --auth-field: rgba(246, 250, 255, 0.92);
 }
 
 * {
@@ -88,23 +100,47 @@ textarea:focus-visible {
 }
 
 .login-screen {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   min-height: 100vh;
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(420px, 0.92fr);
-  gap: 0;
-  padding: 20px;
+  gap: 18px;
+  padding: 24px;
+  background: #071832;
+}
+
+.login-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    linear-gradient(100deg, rgba(7, 24, 56, 0.94), rgba(12, 48, 88, 0.66), rgba(91, 136, 181, 0.2)),
+    url("https://images.unsplash.com/photo-1436491865332-7a61a109cc05?auto=format&fit=crop&w=2000&q=86") center / cover;
+}
+
+.login-screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 32%),
+    linear-gradient(90deg, rgba(4, 17, 40, 0.18), rgba(255, 255, 255, 0.16));
 }
 
 .login-hero {
   position: relative;
   overflow: hidden;
-  min-height: calc(100vh - 40px);
+  min-height: calc(100vh - 48px);
+  border: 1px solid var(--auth-border);
   border-radius: 8px;
-  background:
-    linear-gradient(90deg, rgba(7, 24, 56, 0.9), rgba(18, 52, 94, 0.56), rgba(18, 52, 94, 0.08)),
-    url("https://images.unsplash.com/photo-1436491865332-7a61a109cc05?auto=format&fit=crop&w=1800&q=85") center / cover;
-  color: #ffffff;
+  background: var(--auth-panel);
+  color: var(--auth-text);
   box-shadow: var(--shadow);
+  backdrop-filter: blur(2px);
 }
 
 .login-hero .theme-toggle {
@@ -112,9 +148,9 @@ textarea:focus-visible {
   top: 18px;
   right: 18px;
   z-index: 3;
-  border-color: rgba(255, 255, 255, 0.28);
+  border-color: var(--auth-border);
   background: rgba(255, 255, 255, 0.16);
-  color: #fff;
+  color: var(--auth-text);
   backdrop-filter: blur(18px);
 }
 
@@ -131,8 +167,8 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--auth-border);
+  background: rgba(255, 255, 255, 0.13);
   backdrop-filter: blur(16px);
 }
 
@@ -155,7 +191,7 @@ textarea:focus-visible {
 .hero-copy p {
   max-width: 390px;
   margin: 22px 0 0;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--auth-muted);
   font-size: 1.05rem;
   line-height: 1.65;
 }
@@ -175,9 +211,10 @@ textarea:focus-visible {
   width: min(480px, calc(100% - 36px));
   display: grid;
   gap: 16px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--auth-border);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-solid) 86%, transparent);
+  background: var(--auth-panel-strong);
+  color: var(--auth-text);
   box-shadow: var(--shadow);
   padding: clamp(26px, 4%, 44px);
   backdrop-filter: blur(24px);
@@ -194,7 +231,52 @@ textarea:focus-visible {
 }
 
 .login-card p {
-  color: var(--muted);
+  color: var(--auth-muted);
+}
+
+.login-card .unipro-logo {
+  color: var(--auth-text);
+}
+
+.login-card label {
+  color: var(--auth-muted);
+}
+
+.login-card input {
+  border-color: rgba(255, 255, 255, 0.36);
+  background: var(--auth-field);
+  color: #101a2f;
+}
+
+.login-card input::placeholder {
+  color: rgba(35, 48, 73, 0.64);
+}
+
+.login-card .password-field svg {
+  color: #52617a;
+}
+
+.login-card .checkbox-line input {
+  accent-color: var(--brand);
+}
+
+.login-card .link-button {
+  color: var(--auth-text);
+}
+
+.login-card .divider {
+  color: var(--auth-muted);
+}
+
+.login-card .divider::before,
+.login-card .divider::after {
+  background: var(--auth-border);
+}
+
+.login-card .microsoft-button {
+  border-color: rgba(255, 255, 255, 0.36);
+  background: rgba(255, 255, 255, 0.9);
+  color: #101a2f;
 }
 
 .unipro-logo {
