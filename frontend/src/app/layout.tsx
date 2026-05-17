@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Travel AI",
-  description: "Zero-trust agentic travel workspace"
+  title: "Unipro Travel",
+  description: "Modern zero-trust enterprise travel platform"
 };
 
 export default function RootLayout({

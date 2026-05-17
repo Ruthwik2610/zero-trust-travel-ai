@@ -1,5 +1,5 @@
-import { TravelAgentWorkspace } from "@/components/TravelAgentWorkspace";
+import { LoginScreen } from "@/components/TravelAppScreens";
 
 export default function Home() {
-  return <TravelAgentWorkspace />;
+  return <LoginScreen />;
 }

@@ -31,27 +31,27 @@ export function checkHealth() {
 }
 
 export function planTrip(payload: TravelRequest) {
-  return request<PlanResponse>("/api/agent/plan", {
+  return request<PlanResponse>("/api/travel/agent/plan", {
     method: "POST",
     body: JSON.stringify(payload)
   });
 }
 
 export function getTrips() {
-  return request<Trip[]>("/api/trips");
+  return request<Trip[]>("/api/travel/trips");
 }
 
 export function saveTrip(payload: TravelRequest) {
-  return request<Trip>("/api/trips", {
+  return request<Trip>("/api/travel/trips", {
     method: "POST",
     body: JSON.stringify(payload)
   });
 }
 
 export function getAdminSummary() {
-  return request<AdminSummary>("/api/admin/summary");
+  return request<AdminSummary>("/api/travel/admin/summary");
 }
 
 export function getAuditEvents() {
-  return request<AuditEvent[]>("/api/admin/audit");
+  return request<AuditEvent[]>("/api/travel/admin/audit");
 }

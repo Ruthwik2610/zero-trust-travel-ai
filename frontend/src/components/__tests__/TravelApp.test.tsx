@@ -1,66 +1,32 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { AdminDashboard } from "../AdminDashboard";
-import { TravelAgentWorkspace } from "../TravelAgentWorkspace";
+import { AdminDashboard, LoginScreen, TravelerDashboard, TripPlannerScreen } from "../TravelAppScreens";
 
-describe("Travel AI app surfaces", () => {
-  it("renders the main workspace controls", () => {
-    render(<TravelAgentWorkspace />);
+describe("Unipro Travel product screens", () => {
+  it("renders the branded login screen", () => {
+    render(<LoginScreen />);
 
-    expect(screen.getByLabelText("From")).toBeInTheDocument();
-    expect(screen.getByLabelText("To")).toBeInTheDocument();
-    expect(screen.getByLabelText("Depart")).toBeInTheDocument();
-    expect(screen.getByLabelText("Passengers")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Plan trip" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Admin" })).toBeInTheDocument();
+    expect(screen.getByText("Smarter Travel. Seamless Experiences.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/dashboard");
+    expect(screen.getByRole("button", { name: /Switch to/i })).toBeInTheDocument();
   });
 
-  it("renders mocked admin summary metrics", () => {
-    render(
-      <AdminDashboard
-        summary={{
-          total_trips: 18,
-          draft_trips: 5,
-          booked_trips: 2,
-          high_risk_trips: 3,
-          audit_events: 9
-        }}
-        trips={[{
-          id: "trip_test",
-          request: {
-            origin: "SFO",
-            destination: "LHR",
-            depart_date: "2026-06-18",
-            return_date: "2026-06-24",
-            travelers: 2,
-            cabin: "business",
-            budget_usd: 6500,
-            purpose: "client meetings"
-          },
-          status: "draft",
-          risk: "high",
-          flight_offers: [{
-            id: "offer_1",
-            kind: "flight",
-            title: "SFO to LHR",
-            provider: "deterministic-planner",
-            price_usd: 4210,
-            currency: "USD",
-            refundable: true,
-            notes: []
-          }],
-          hotel_offers: [],
-          itinerary: [],
-          policy_checks: ["Risk level: high."],
-          savings_suggestions: [],
-          created_at: "2026-05-16T00:00:00Z"
-        }]}
-      />
-    );
+  it("renders the traveler dashboard widgets", () => {
+    render(<TravelerDashboard />);
 
-    expect(screen.getByText("18")).toBeInTheDocument();
-    expect(screen.getByText("Pending approvals")).toBeInTheDocument();
-    expect(screen.getAllByText("$4.2K").length).toBeGreaterThan(0);
+    expect(screen.getByText("Hello, Vikram!")).toBeInTheDocument();
+    expect(screen.getByText("Visa Rule Check")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Plan New Trip/i })).toHaveAttribute("href", "/planner");
+  });
+
+  it("renders the booking chat and admin dashboard", () => {
+    render(<TripPlannerScreen />);
+    expect(screen.getByText("Trip Planner")).toBeInTheDocument();
+    expect(screen.getByText("Review Itinerary")).toBeInTheDocument();
+
+    render(<AdminDashboard />);
+    expect(screen.getByText("Admin User")).toBeInTheDocument();
+    expect(screen.getByText("Users & Travelers Overview")).toBeInTheDocument();
   });
 });

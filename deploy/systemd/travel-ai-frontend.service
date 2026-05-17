@@ -8,7 +8,7 @@ WorkingDirectory=/opt/zero-trust-travel-ai/frontend
 EnvironmentFile=-/opt/zero-trust-travel-ai/.env.frontend
 Environment=PORT=3100
 Environment=HOSTNAME=127.0.0.1
-Environment=TRAVEL_API_INTERNAL_URL=http://127.0.0.1:8100
+Environment=TRAVEL_API_INTERNAL_URL=http://127.0.0.1:8000
 ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3100
 Restart=always
 RestartSec=5
