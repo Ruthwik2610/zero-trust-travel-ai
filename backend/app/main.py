@@ -733,6 +733,9 @@ def send_corporate_request_notification(
         audit_security_decision(store, context, "corporate.notification.denied", str(exc), purpose, "deny", request_id)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
     request = _load_authorized_corporate_request(store, context, request_id, purpose)
+    if notification.kind == "final_itinerary" and (request.status != "Finalized" or not request.generated_plan):
+        audit_security_decision(store, context, "corporate.notification.blocked", "Final itinerary is not ready.", purpose, "deny", request_id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Final itinerary is not ready")
     attachment = _corporate_request_workbook_bytes(request) if notification.attach_itinerary else None
     event = send_resend_notification(request_id, request, notification, attachment)
     saved = store.save_email_event(event)

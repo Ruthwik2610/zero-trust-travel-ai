@@ -237,6 +237,13 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Request workspace now shows approval tracking with approval status, final approval readiness, and agent-review posture.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Final Itinerary Notification Gate Checkpoint
+
+- Backend final-itinerary email notifications are now blocked until the corporate request is finalized and has a generated plan.
+- Blocked final-itinerary notification attempts create deny audit events with safe operational copy.
+- Resend notification tests now finalize the request before sending final-itinerary emails, matching the production contract.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

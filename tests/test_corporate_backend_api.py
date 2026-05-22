@@ -385,6 +385,26 @@ def test_blocked_finalization_and_export_attempts_are_audited(tmp_path, monkeypa
     assert "anika.rao@unipro.com" not in audit.text
 
 
+def test_final_itinerary_notification_is_blocked_until_request_is_finalized(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    created = client.post("/api/corporate/requests", json=_corporate_payload(), headers=_headers())
+    request_id = created.json()["id"]
+
+    blocked = client.post(
+        f"/api/corporate/requests/{request_id}/notifications",
+        json={"kind": "final_itinerary", "to": ["traveler@example.com"], "attach_itinerary": True},
+        headers=_headers(purpose="send final itinerary notification"),
+    )
+
+    assert blocked.status_code == 400
+    assert blocked.json()["detail"] == "Final itinerary is not ready"
+    audit = client.get(
+        "/api/admin/audit",
+        headers=_headers("admin.user@unipro.com", "review travel audit events"),
+    )
+    assert any(event["event_type"] == "corporate.notification.blocked" and event["decision"] == "deny" for event in audit.json())
+
+
 def test_generate_plan_for_hyderabad_to_johannesburg_checks_documents_budget_and_policy(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     imported = client.post(
@@ -568,6 +588,13 @@ def test_resend_notification_and_webhook_store_safe_events(tmp_path, monkeypatch
     client = _client(tmp_path, monkeypatch)
     created = client.post("/api/corporate/requests", json=_corporate_payload(), headers=_headers())
     request_id = created.json()["id"]
+    client.post(f"/api/corporate/requests/{request_id}/plan", headers=_headers())
+    finalized = client.post(
+        f"/api/corporate/requests/{request_id}/finalize",
+        json={"agent_reviewed": True, "approval_status": "Received"},
+        headers=_headers(purpose="finalize approved corporate itinerary"),
+    )
+    assert finalized.status_code == 200
     monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
     monkeypatch.setenv("RESEND_FROM_EMAIL", "Unipro Travel <travel@example.com>")
 
