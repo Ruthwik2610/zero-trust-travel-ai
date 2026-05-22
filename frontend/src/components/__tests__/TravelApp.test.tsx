@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, RequestWorkspaceScreen, TravelerDashboard, TravelerDossierScreen, TravelerRosterScreen } from "../TravelAppScreens";
 import {
+  chatWithAssistant,
+  clearAuthSession,
   createCorporateRequest,
   demoLogin,
   downloadCorporateExcelTemplate,
@@ -21,6 +23,11 @@ import {
 import type { CorporateAdminSummary, CorporateTravelRequest, TravelerProfile } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
+  chatWithAssistant: vi.fn(),
+  clearAuthSession: vi.fn(() => {
+    window.localStorage.removeItem("travel_ai_api_token");
+    window.localStorage.removeItem("travel_ai_auth_context");
+  }),
   createCorporateRequest: vi.fn(),
   demoLogin: vi.fn(),
   downloadCorporateExcelTemplate: vi.fn(),
@@ -235,6 +242,11 @@ beforeEach(() => {
   });
   vi.mocked(downloadCorporateExcelTemplate).mockResolvedValue(new Blob(["template"]));
   vi.mocked(downloadCorporateRequestExcel).mockResolvedValue(new Blob(["itinerary"]));
+  vi.mocked(chatWithAssistant).mockResolvedValue({
+    message: "Live assistant response from the backend. No booking has been made.",
+    model: "openrouter/deepseek",
+    audit_events: []
+  });
   vi.mocked(uploadCorporateRequests).mockResolvedValue({
     totalRows: 4,
     createdRequests: 3,
@@ -248,6 +260,9 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     render(<LoginScreen />);
 
     expect(screen.getByText("Unipro Travel Operations")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByLabelText("Email")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Travel Agent/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Research Intake/i })).toBeNull();
     expect(screen.queryByText("Research")).toBeNull();
@@ -278,8 +293,39 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("Budget")).toBeTruthy();
     expect(screen.getByText("Approval")).toBeTruthy();
     expect(screen.getAllByText("Hyderabad → Johannesburg").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Search requests" })).toBeTruthy();
     expect(listCorporateRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it("filters the request queue by search term and status", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest, missingInfoRequest, finalizedRequest]);
+
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search requests" }), { target: { value: "Singapore" } });
+    expect(screen.getAllByText("Anika Shah").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Vikram Rao")).toBeNull();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search requests" }), { target: { value: "" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Status filter" }), { target: { value: "finalized" } });
+    expect(screen.queryByText("Anika Shah")).toBeNull();
+    expect(screen.getAllByText("Mira Kapoor").length).toBeGreaterThan(0);
+    expect(screen.getByText("Showing 1 to 1 of 1 requests")).toBeTruthy();
+  });
+
+  it("refreshes the live request queue from the backend", async () => {
+    vi.mocked(listCorporateRequests)
+      .mockResolvedValueOnce([sampleRequest])
+      .mockResolvedValueOnce([finalizedRequest]);
+
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("Vikram Rao")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh requests" }));
+
+    expect((await screen.findAllByText("Mira Kapoor")).length).toBeGreaterThan(0);
+    expect(listCorporateRequests).toHaveBeenCalledTimes(2);
   });
 
   it("defaults the dashboard to a priority board with workflow stage columns", async () => {
@@ -374,6 +420,22 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(container.querySelector(".sidebar-travel-image")).toBeNull();
   });
 
+  it("clears the demo session when signing out", async () => {
+    window.localStorage.setItem("travel_ai_selected_role", "agent");
+    window.localStorage.setItem("travel_ai_user_email", "demo.agent@unipro.com");
+    window.history.pushState({}, "", "/dashboard");
+
+    render(<TravelerDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Agent Operations Dashboard" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Sign out/i }));
+
+    expect(clearAuthSession).toHaveBeenCalled();
+    expect(window.localStorage.getItem("travel_ai_selected_role")).toBeNull();
+    expect(window.localStorage.getItem("travel_ai_user_email")).toBeNull();
+    expect(window.location.pathname).toBe("/");
+  });
+
   it("lets an agent create a travel request from the dashboard", async () => {
     render(<TravelerDashboard />);
 
@@ -409,6 +471,8 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
 
     expect((await screen.findAllByText("Confirm mobile number for pickup.")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+    expect(screen.getByText(/Estimated planning draft/i)).toBeTruthy();
+    expect(screen.getByText(/verify provider prices before sending or finalizing/i)).toBeTruthy();
     expect(screen.getByLabelText("AI Summary")).toBeTruthy();
     expect(screen.getByLabelText("Customer Message Draft")).toBeTruthy();
     expect(screen.getByText("Policy Fit")).toBeTruthy();
@@ -482,9 +546,20 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Compare policy-compliant options/i }));
 
     expect((await screen.findAllByText(/Compare policy-compliant options/i)).length).toBeGreaterThan(1);
-    expect(await screen.findByText(/Here are the best policy fit options/i)).toBeTruthy();
+    expect(await screen.findByText(/Live assistant response from the backend/i)).toBeTruthy();
+    expect(chatWithAssistant).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Compare policy-compliant options",
+      history: expect.any(Array),
+      trip: expect.objectContaining({
+        request: expect.objectContaining({
+          origin: "Hyderabad",
+          destination: "Johannesburg"
+        })
+      })
+    }));
     expect(screen.getAllByText(/AI Planning Assistant/i).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/booked/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Expand assistant" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Assistant history" })).toBeNull();
   });
 
   it("flags itinerary options that require manual provider sourcing", async () => {

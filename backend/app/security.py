@@ -297,7 +297,12 @@ def _sign(payload: bytes) -> str:
 
 
 def _token_secret() -> str:
-    return os.getenv("TRAVEL_AI_TOKEN_SECRET") or os.getenv("API_KEY") or "travel-ai-local-development-secret"
+    configured = os.getenv("TRAVEL_AI_TOKEN_SECRET")
+    if configured:
+        return configured
+    if os.getenv("TRAVEL_AI_ENV") == "production":
+        raise RuntimeError("TRAVEL_AI_TOKEN_SECRET is required in production")
+    return os.getenv("API_KEY") or "travel-ai-local-development-secret"
 
 
 def _encryption_key() -> str:

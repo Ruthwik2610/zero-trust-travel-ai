@@ -60,10 +60,15 @@ from .security import (
 from .store import TravelStore
 
 
+def cors_allowed_origins() -> list[str]:
+    raw = os.getenv("FRONTEND_ORIGIN") or os.getenv("TRAVEL_AI_ALLOWED_ORIGINS") or "http://127.0.0.1:3100,http://localhost:3100"
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app = FastAPI(title="Travel AI Backend")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_allowed_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

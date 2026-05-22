@@ -10,7 +10,8 @@ EnvironmentFile=-/opt/zero-trust-travel-ai/.env.backend
 ExecStart=/opt/zero-trust-travel-ai/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100
 Restart=always
 RestartSec=5
-User=root
+User=travelai
+Group=travelai
 
 [Install]
 WantedBy=multi-user.target

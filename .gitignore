@@ -38,6 +38,7 @@ build/
 out/
 coverage/
 test-results/
+lighthouse-report/
 *.tsbuildinfo
 .turbo/
 .vercel/

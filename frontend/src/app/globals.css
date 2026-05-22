@@ -684,13 +684,36 @@ label {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .queue-tools select {
-  width: 78px;
+  width: 142px;
   min-height: 32px;
   padding: 0 8px;
   font-size: 0.78rem;
+}
+
+.queue-search {
+  width: 172px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 8px;
+  color: var(--muted);
+}
+
+.queue-search input {
+  min-height: 28px;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  font-size: 0.78rem;
+  background: transparent;
 }
 
 .queue-tools .icon-button {

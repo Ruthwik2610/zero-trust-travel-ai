@@ -10,7 +10,6 @@ import {
   ClipboardCheck,
   Clock3,
   Download,
-  Expand,
   FileSpreadsheet,
   FileText,
   History,
@@ -27,7 +26,6 @@ import {
   Search,
   Send,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
   Sun,
   Upload,
@@ -38,6 +36,8 @@ import {
 import { FormEvent, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import {
+  chatWithAssistant,
+  clearAuthSession,
   createCorporateRequest,
   demoLogin,
   downloadCorporateExcelTemplate,
@@ -73,6 +73,7 @@ import type {
   PolicyActivityEvent,
   PolicyGroup,
   PolicyRevision,
+  Trip,
   TravelerProfile
 } from "@/lib/types";
 
@@ -231,6 +232,50 @@ function routeText(request: CorporateTravelRequest) {
   return `${request.origin || "Origin pending"} → ${request.destination || "Destination pending"}`;
 }
 
+function corporateRequestTripContext(request: CorporateTravelRequest): Trip {
+  return {
+    id: request.id,
+    owner_id: "travel-ops",
+    owner_department: "travel_ops",
+    request: {
+      origin: request.origin,
+      destination: request.destination,
+      depart_date: request.departDate,
+      return_date: request.returnDate,
+      travelers: 1,
+      cabin: "economy",
+      budget_usd: null,
+      purpose: request.purpose
+    },
+    status: "draft",
+    risk: priorityFor(request).toLowerCase() === "high" ? "high" : "medium",
+    flight_offers: request.recommendedPlans.map((plan) => ({
+      id: `${plan.id}-flight`,
+      kind: "flight",
+      title: plan.flightSummary,
+      provider: "corporate-plan",
+      price_usd: 0,
+      currency: plan.currency,
+      refundable: false,
+      notes: [plan.tradeoffs]
+    })),
+    hotel_offers: request.recommendedPlans.map((plan) => ({
+      id: `${plan.id}-hotel`,
+      kind: "hotel",
+      title: plan.hotelSummary,
+      provider: "corporate-plan",
+      price_usd: 0,
+      currency: plan.currency,
+      refundable: false,
+      notes: [plan.policyFit]
+    })),
+    itinerary: [],
+    policy_checks: [request.budgetPolicyCheck, request.readinessCheck].filter(Boolean),
+    savings_suggestions: request.recommendedPlans.map((plan) => plan.tradeoffs).filter(Boolean),
+    created_at: request.lastUpdated
+  };
+}
+
 function priorityFor(request: CorporateTravelRequest): "High" | "Medium" | "Low" {
   if (
     request.status === "missing_info"
@@ -381,6 +426,13 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
     setStoredEmail(getStoredEmail());
   }, []);
 
+  function signOut() {
+    clearAuthSession();
+    window.localStorage.removeItem(SELECTED_ROLE_KEY);
+    window.localStorage.removeItem(USER_EMAIL_KEY);
+    navigateAfterLogin("/");
+  }
+
   return (
     <main className="ops-shell">
       <aside className="ops-sidebar">
@@ -423,7 +475,7 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
             </select>
           </div>
           <ThemeToggle />
-          <button className="sign-out-button" type="button"><LogOut size={16} /> Sign out</button>
+          <button className="sign-out-button" type="button" onClick={signOut}><LogOut size={16} /> Sign out</button>
         </header>
         {children}
       </section>
@@ -519,18 +571,35 @@ export function TravelerDashboard() {
   const [workspaceTab, setWorkspaceTab] = useState<"details" | "assistant">("details");
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [showRequestForm, setShowRequestForm] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<CorporateTravelRequest["status"] | "all">("all");
   const dashboardRequests = useMemo(() => buildDashboardRequests(requests), [requests]);
-  const selectedRequest = dashboardRequests.find((request) => request.id === selectedId) || dashboardRequests[0] || null;
+  const filteredDashboardRequests = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return dashboardRequests.filter((request) => {
+      const statusMatches = statusFilter === "all" || request.status === statusFilter;
+      const queryMatches = !query || [
+        request.id,
+        request.travellerName,
+        request.travellerEmail,
+        request.company,
+        request.origin,
+        request.destination,
+        request.purpose
+      ].some((value) => value.toLowerCase().includes(query));
+      return statusMatches && queryMatches;
+    });
+  }, [dashboardRequests, searchQuery, statusFilter]);
+  const selectedRequest = filteredDashboardRequests.find((request) => request.id === selectedId) || filteredDashboardRequests[0] || null;
 
-  useEffect(() => {
-    let mounted = true;
+  async function refreshRequests() {
+    setLoadState("loading");
     ensureTravelSession()
       .then(() => listCorporateRequests())
       .then((items) => {
-        if (!mounted) return;
         if (items.length) {
           setRequests(items);
-          setSelectedId(items[0].id);
+          setSelectedId((current) => items.some((item) => item.id === current) ? current : items[0].id);
         } else {
           setRequests([]);
           setSelectedId("");
@@ -538,14 +607,14 @@ export function TravelerDashboard() {
         setLoadState("ready");
       })
       .catch(() => {
-        if (!mounted) return;
         setRequests([]);
         setSelectedId("");
         setLoadState("error");
       });
-    return () => {
-      mounted = false;
-    };
+  }
+
+  useEffect(() => {
+    void refreshRequests();
   }, []);
 
   function replaceRequest(next: CorporateTravelRequest) {
@@ -576,7 +645,16 @@ export function TravelerDashboard() {
       </section>
 
       <section className="agent-operations-grid">
-        <RequestQueue requests={dashboardRequests} selectedId={selectedRequest?.id || selectedId} onOpen={setSelectedId} />
+        <RequestQueue
+          requests={filteredDashboardRequests}
+          selectedId={selectedRequest?.id || selectedId}
+          searchQuery={searchQuery}
+          statusFilter={statusFilter}
+          onOpen={setSelectedId}
+          onRefresh={() => void refreshRequests()}
+          onSearchChange={setSearchQuery}
+          onStatusFilterChange={setStatusFilter}
+        />
         <section className="agent-workspace-tabs">
           {showRequestForm ? (
             <TravelRequestForm onCancel={() => setShowRequestForm(false)} onCreate={(payload) => void createRequest(payload)} />
@@ -603,7 +681,25 @@ export function TravelerDashboard() {
   );
 }
 
-function RequestQueue({ requests, selectedId, onOpen }: { requests: CorporateTravelRequest[]; selectedId: string; onOpen: (id: string) => void }) {
+function RequestQueue({
+  requests,
+  selectedId,
+  searchQuery,
+  statusFilter,
+  onOpen,
+  onRefresh,
+  onSearchChange,
+  onStatusFilterChange
+}: {
+  requests: CorporateTravelRequest[];
+  selectedId: string;
+  searchQuery: string;
+  statusFilter: CorporateTravelRequest["status"] | "all";
+  onOpen: (id: string) => void;
+  onRefresh: () => void;
+  onSearchChange: (value: string) => void;
+  onStatusFilterChange: (value: CorporateTravelRequest["status"] | "all") => void;
+}) {
   const counts = {
     new: requests.filter((request) => request.status === "new").length,
     planning: requests.filter((request) => request.status === "planning").length,
@@ -616,10 +712,24 @@ function RequestQueue({ requests, selectedId, onOpen }: { requests: CorporateTra
       <div className="card-title-row">
         <h2>Request Queue</h2>
         <div className="queue-tools">
-          <select aria-label="Status filter" defaultValue="all"><option value="all">All Status</option></select>
-          <button aria-label="Search" className="icon-button" type="button"><Search size={16} /></button>
-          <button aria-label="Filter" className="icon-button" type="button"><SlidersHorizontal size={16} /></button>
-          <button aria-label="Refresh" className="icon-button" type="button"><RefreshCw size={16} /></button>
+          <label className="queue-search">
+            <Search size={15} />
+            <input
+              aria-label="Search requests"
+              placeholder="Search"
+              value={searchQuery}
+              onChange={(event) => onSearchChange(event.target.value)}
+            />
+          </label>
+          <select aria-label="Status filter" value={statusFilter} onChange={(event) => onStatusFilterChange(event.target.value as CorporateTravelRequest["status"] | "all")}>
+            <option value="all">All Status</option>
+            <option value="new">New</option>
+            <option value="planning">Planning</option>
+            <option value="pending_approval">Pending Approval</option>
+            <option value="missing_info">Missing Info</option>
+            <option value="finalized">Finalized</option>
+          </select>
+          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
@@ -953,6 +1063,10 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
 
       {activeTab === "plan" ? (
         <section className="workspace-panel" role="tabpanel">
+          <div className="detail-info-card amber">
+            <strong>Estimated planning draft</strong>
+            <span>Corporate plan values are not live priced or booked. Agent must verify provider prices before sending or finalizing.</span>
+          </div>
           <div className="detail-summary-grid">
             <EditableSection title="AI Summary" icon={Sparkles} value={draft.aiSummary} onChange={(value) => updateDraft("aiSummary", value)} />
             <EditableSection title="Customer Message Draft" icon={MessageSquare} value={draft.customerMessageDraft} onChange={(value) => updateDraft("customerMessageDraft", value)} />
@@ -1058,6 +1172,7 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
 function AiPlanningAssistant({ request }: { request: CorporateTravelRequest }) {
   const selectedPlan = request.recommendedPlans.find((plan) => plan.selected) || request.recommendedPlans[0];
   const [chatInput, setChatInput] = useState("");
+  const [assistantStatus, setAssistantStatus] = useState<"idle" | "responding">("idle");
   const [chatMessages, setChatMessages] = useState<TravelChatLine[]>([
     { role: "assistant", content: `Hi Jane, I can help you plan the best trip for ${request.travellerName.split(" ")[0] || "this traveler"}. What would you like to work on?` }
   ]);
@@ -1067,23 +1182,33 @@ function AiPlanningAssistant({ request }: { request: CorporateTravelRequest }) {
     setChatInput("");
   }, [request.id, request.travellerName]);
 
-  function respond(prompt: string) {
+  async function respond(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed || assistantStatus === "responding") return;
+    const outboundHistory = chatMessages.slice(-10);
+    setAssistantStatus("responding");
     setChatMessages((current) => [
       ...current,
-      { role: "user", content: prompt },
-      {
-        role: "assistant",
-        content: selectedPlan
-          ? `Here are the best ${selectedPlan.name.toLowerCase()} options for ${routeText(request)}. ${selectedPlan.tradeoffs}`
-          : `I can compare compliant options for ${routeText(request)} once the travel plan is generated.`
-      }
+      { role: "user", content: trimmed }
     ]);
+    try {
+      const response = await chatWithAssistant({
+        message: trimmed,
+        history: outboundHistory,
+        trip: corporateRequestTripContext(request)
+      });
+      setChatMessages((current) => [...current, { role: "assistant", content: response.message }]);
+    } catch {
+      setChatMessages((current) => [...current, { role: "assistant", content: "Planning assistant is unavailable. Continue with manual review." }]);
+    } finally {
+      setAssistantStatus("idle");
+    }
   }
 
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!chatInput.trim()) return;
-    respond(chatInput);
+    void respond(chatInput);
     setChatInput("");
   }
 
@@ -1092,11 +1217,6 @@ function AiPlanningAssistant({ request }: { request: CorporateTravelRequest }) {
       <div className="assistant-head">
         <div>
           <h2>AI Planning Assistant <span>Beta</span></h2>
-        </div>
-        <div>
-          <button className="icon-button" aria-label="Expand assistant" type="button"><Expand size={16} /></button>
-          <button className="icon-button" aria-label="Assistant history" type="button"><History size={16} /></button>
-          <button className="icon-button" aria-label="Assistant options" type="button"><MoreVertical size={16} /></button>
         </div>
       </div>
       <div className="assistant-suggestions">
@@ -1108,7 +1228,7 @@ function AiPlanningAssistant({ request }: { request: CorporateTravelRequest }) {
           "Check visa & entry requirements",
           "Compare policy-compliant options"
         ].map((prompt) => (
-          <button key={prompt} type="button" onClick={() => respond(prompt)}><Plane size={15} /> {prompt}<span>›</span></button>
+          <button key={prompt} type="button" onClick={() => void respond(prompt)} disabled={assistantStatus === "responding"}><Plane size={15} /> {prompt}<span>›</span></button>
         ))}
       </div>
       <div className="agent-chat-feed assistant-feed" aria-live="polite">
@@ -1128,7 +1248,7 @@ function AiPlanningAssistant({ request }: { request: CorporateTravelRequest }) {
       </div>
       <form className="chat-form" onSubmit={submit}>
         <input aria-label="Chat message" value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask anything about this trip..." />
-        <button className="icon-button" type="submit" aria-label="Send"><Send size={16} /></button>
+        <button className="icon-button" type="submit" aria-label="Send" disabled={assistantStatus === "responding"}><Send size={16} /></button>
       </form>
       <small>AI responses may be inaccurate. Verify important information.</small>
     </aside>

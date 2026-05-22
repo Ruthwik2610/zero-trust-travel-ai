@@ -9,7 +9,7 @@ BACKEND_PATH = Path(__file__).resolve().parents[1] / "backend"
 if str(BACKEND_PATH) not in sys.path:
     sys.path.insert(0, str(BACKEND_PATH))
 
-from app.main import app
+from app.main import app, cors_allowed_origins
 from app.security import create_access_token
 
 
@@ -37,6 +37,25 @@ def _request_payload():
         "budget_usd": 2400,
         "purpose": "client meetings",
     }
+
+
+def test_cors_origins_are_env_driven(monkeypatch):
+    monkeypatch.setenv("FRONTEND_ORIGIN", "https://travel.example.com, http://127.0.0.1:3100 ")
+
+    assert cors_allowed_origins() == ["https://travel.example.com", "http://127.0.0.1:3100"]
+
+
+def test_production_requires_explicit_token_secret(monkeypatch):
+    monkeypatch.setenv("TRAVEL_AI_ENV", "production")
+    monkeypatch.delenv("TRAVEL_AI_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("API_KEY", "legacy-fallback-must-not-sign-production-tokens")
+
+    try:
+        create_access_token("demo.user@unipro.com")
+    except RuntimeError as exc:
+        assert "TRAVEL_AI_TOKEN_SECRET is required in production" in str(exc)
+    else:
+        raise AssertionError("production token creation should fail without TRAVEL_AI_TOKEN_SECRET")
 
 
 def test_plan_response_is_polished_and_records_provider_unavailable(tmp_path, monkeypatch):

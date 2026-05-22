@@ -12,7 +12,8 @@ Environment=TRAVEL_AI_API_INTERNAL_URL=http://127.0.0.1:8100
 ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3100
 Restart=always
 RestartSec=5
-User=root
+User=travelai
+Group=travelai
 
 [Install]
 WantedBy=multi-user.target
