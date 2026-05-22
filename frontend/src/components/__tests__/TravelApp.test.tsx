@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, RequestWorkspaceScreen, TravelerDashboard, TravelerDossierScreen } from "../TravelAppScreens";
+import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, RequestWorkspaceScreen, TravelerDashboard, TravelerDossierScreen, TravelerRosterScreen } from "../TravelAppScreens";
 import {
   createCorporateRequest,
   demoLogin,
@@ -12,6 +12,7 @@ import {
   getTraveler,
   getCorporateAdminSummary,
   listCorporateRequests,
+  listTravelers,
   sendCorporateRequestNotification,
   updateCorporateRequest,
   uploadCorporateRequests
@@ -31,6 +32,7 @@ vi.mock("@/lib/api", () => ({
     const raw = window.localStorage.getItem("travel_ai_auth_context");
     return raw ? JSON.parse(raw) : null;
   }),
+  listTravelers: vi.fn(),
   listCorporateRequests: vi.fn(),
   sendCorporateRequestNotification: vi.fn(),
   storeAuthSession: vi.fn((session) => {
@@ -207,6 +209,7 @@ beforeEach(() => {
   }));
   vi.mocked(generateCorporateTravelPlan).mockResolvedValue(generatedRequest);
   vi.mocked(getTraveler).mockResolvedValue(documentUpdateTraveler);
+  vi.mocked(listTravelers).mockResolvedValue([documentUpdateTraveler]);
   vi.mocked(updateCorporateRequest).mockResolvedValue(generatedRequest);
   vi.mocked(finalizeCorporateRequest).mockImplementation(async (_id, payload) => ({
     ...generatedRequest,
@@ -578,6 +581,54 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
       });
     });
     expect(await screen.findByRole("status")).toHaveTextContent("Document update email accepted by Resend.");
+  });
+
+  it("filters the traveler roster by search text", async () => {
+    vi.mocked(listTravelers).mockResolvedValue([
+      documentUpdateTraveler,
+      {
+        ...documentUpdateTraveler,
+        id: "traveler_ravi",
+        name: "Ravi Menon",
+        email: "ravi.menon@acme.com",
+        company: "Acme Infrastructure",
+        status: "Compliant",
+        documents: [{ document_type: "passport", label: "Passport", status: "Ready", redacted_value: "On file" }]
+      }
+    ]);
+
+    render(<TravelerRosterScreen />);
+
+    expect(await screen.findByText("Anika Shah")).toBeTruthy();
+    expect(screen.getByText("Ravi Menon")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search travelers"), { target: { value: "northstar" } });
+
+    expect(screen.getByText("Anika Shah")).toBeTruthy();
+    expect(screen.queryByText("Ravi Menon")).toBeNull();
+  });
+
+  it("filters the traveler roster to document issues", async () => {
+    vi.mocked(listTravelers).mockResolvedValue([
+      documentUpdateTraveler,
+      {
+        ...documentUpdateTraveler,
+        id: "traveler_ravi",
+        name: "Ravi Menon",
+        email: "ravi.menon@acme.com",
+        company: "Acme Infrastructure",
+        status: "Compliant",
+        documents: [{ document_type: "passport", label: "Passport", status: "Ready", redacted_value: "On file" }]
+      }
+    ]);
+
+    render(<TravelerRosterScreen />);
+
+    expect(await screen.findByText("Anika Shah")).toBeTruthy();
+    expect(screen.getByText("Ravi Menon")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Document issues only"));
+
+    expect(screen.getByText("Anika Shah")).toBeTruthy();
+    expect(screen.queryByText("Ravi Menon")).toBeNull();
   });
 
   it("renders admin metrics and uploads Excel files to the backend route", async () => {

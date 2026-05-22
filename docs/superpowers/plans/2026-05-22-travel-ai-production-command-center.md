@@ -144,6 +144,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Final itinerary notifications attach the itinerary workbook and require approval/finalization before sending.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Traveler Roster Filter Checkpoint
+
+- Traveler roster now supports search across traveler name, email, company, status, and loyalty providers.
+- The roster also supports a document-issues-only filter for missing, expiring, or review-needed document states.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

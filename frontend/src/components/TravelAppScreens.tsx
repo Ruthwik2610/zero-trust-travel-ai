@@ -1295,10 +1295,29 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
 
 export function TravelerRosterScreen() {
   const [travelers, setTravelers] = useState<TravelerProfile[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [documentIssuesOnly, setDocumentIssuesOnly] = useState(false);
 
   useEffect(() => {
     listTravelers().then(setTravelers).catch(() => setTravelers([]));
   }, []);
+
+  const filteredTravelers = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return travelers.filter((traveler) => {
+      const hasDocumentIssue = traveler.status !== "Compliant" || traveler.documents.some((document) => document.status !== "Ready");
+      if (documentIssuesOnly && !hasDocumentIssue) return false;
+      if (!query) return true;
+      const programs = traveler.loyalty_programs.map((program) => program.provider).join(" ");
+      return [
+        traveler.name,
+        traveler.email,
+        traveler.company,
+        traveler.status,
+        programs
+      ].join(" ").toLowerCase().includes(query);
+    });
+  }, [documentIssuesOnly, searchTerm, travelers]);
 
   return (
     <AppShell active="travelers">
@@ -1309,9 +1328,18 @@ export function TravelerRosterScreen() {
         </div>
       </section>
       <section className="ops-card table-card">
+        <label className="topbar-control">
+          <Search size={16} />
+          <span>Search travelers</span>
+          <input aria-label="Search travelers" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Name, company, status" />
+        </label>
+        <label className="topbar-control">
+          <input aria-label="Document issues only" checked={documentIssuesOnly} onChange={(event) => setDocumentIssuesOnly(event.target.checked)} type="checkbox" />
+          <span>Document issues only</span>
+        </label>
         <div className="request-table">
           <div className="request-table-head"><span>Traveler</span><span>Company</span><span>Status</span><span>Programs</span></div>
-          {travelers.map((traveler) => (
+          {filteredTravelers.map((traveler) => (
             <Link className="request-table-row" href={`/travelers/${traveler.id}`} key={traveler.id}>
               <span>{traveler.name}<small>{traveler.email}</small></span>
               <span>{traveler.company}</span>
