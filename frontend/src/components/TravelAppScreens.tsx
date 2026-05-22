@@ -1157,12 +1157,28 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
   const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
   const [notification, setNotification] = useState("");
   const [sendingNotification, setSendingNotification] = useState(false);
+  const [generatingPlan, setGeneratingPlan] = useState(false);
 
   useEffect(() => {
     listCorporateRequests().then(setRequests).catch(() => setRequests([]));
   }, []);
 
   const request = requests.find((item) => item.id === requestId) || requests[0] || null;
+
+  async function generatePlan() {
+    if (!request) return;
+    setGeneratingPlan(true);
+    setNotification("Generating plan...");
+    try {
+      const planned = await generateCorporateTravelPlan(request.id);
+      setRequests((current) => current.map((item) => item.id === planned.id ? planned : item));
+      setNotification("Plan generated for workspace review.");
+    } catch {
+      setNotification("Plan generation is unavailable. Continue with manual review.");
+    } finally {
+      setGeneratingPlan(false);
+    }
+  }
 
   async function sendApprovalEmail() {
     if (!request) return;
@@ -1224,6 +1240,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
             <div><dt>Dates</dt><dd>{request ? `${request.departDate || "TBD"} to ${request.returnDate || "TBD"}` : "TBD"}</dd></div>
             <div><dt>Approval</dt><dd>{request?.approvalStatus || "Not Required"}</dd></div>
           </dl>
+          <button className="primary-button" type="button" onClick={() => void generatePlan()} disabled={generatingPlan || !request}><Sparkles size={16} /> Generate Plan</button>
         </article>
         <article className="ops-card detail-card">
           <h2>Communication Thread</h2>
@@ -1232,6 +1249,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
         </article>
         <article className="ops-card detail-card">
           <h2>Policy & Budget</h2>
+          {request?.aiSummary ? <p>{request.aiSummary}</p> : null}
           <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy and budget posture."}</pre>
           <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
           <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><FileSpreadsheet size={16} /> Send Final Itinerary</button>

@@ -513,6 +513,22 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.queryByText(/RESEND_API_KEY/)).toBeNull();
   });
 
+  it("generates plans from the request workspace", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest]);
+    vi.mocked(generateCorporateTravelPlan).mockResolvedValue(generatedRequest);
+
+    render(<RequestWorkspaceScreen requestId="TR-2026-9001" />);
+
+    expect(await screen.findByText("Vikram Rao")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Generate Plan" }));
+
+    await waitFor(() => {
+      expect(generateCorporateTravelPlan).toHaveBeenCalledWith("TR-2026-9001");
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Plan generated for workspace review.");
+    expect(screen.getByText("Generated complete travel plan for Vikram.")).toBeTruthy();
+  });
+
   it("sends final itinerary emails with the itinerary attachment from the request workspace", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([finalizedRequest]);
     vi.mocked(sendCorporateRequestNotification).mockResolvedValue({
