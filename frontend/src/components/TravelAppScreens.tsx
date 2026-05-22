@@ -1299,6 +1299,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
 
 export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
   const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
+  const [statusMessage, setStatusMessage] = useState("");
 
   useEffect(() => {
     listCorporateRequests().then(setRequests).catch(() => setRequests([]));
@@ -1311,6 +1312,19 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
     const text = `${plan.flightSummary} ${plan.hotelSummary} ${plan.policyFit}`.toLowerCase();
     return text.includes("manual sourcing") || text.includes("manual review");
   });
+
+  async function selectPlan(planId: string) {
+    if (!request) return;
+    const recommendedPlans = plans.map((plan) => ({ ...plan, selected: plan.id === planId }));
+    try {
+      const saved = await updateCorporateRequest(request.id, { recommendedPlans });
+      setRequests((current) => current.map((item) => item.id === saved.id ? saved : item));
+      setStatusMessage("Itinerary option selected.");
+    } catch {
+      setRequests((current) => current.map((item) => item.id === request.id ? { ...item, recommendedPlans } : item));
+      setStatusMessage("Itinerary option selected locally. Backend update is unavailable.");
+    }
+  }
 
   return (
     <AppShell active="itineraries">
@@ -1339,10 +1353,12 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
             <p>{plan.flightSummary}</p>
             <p>{plan.hotelSummary}</p>
             <strong>{formatMoney(plan.totalAmount, plan.currency)}</strong>
+            <button className="secondary-button" type="button" onClick={() => void selectPlan(plan.id)}>Select {plan.name}</button>
           </article>
         )) : (
           <article className="ops-card detail-card"><h2>No provider options loaded</h2><p>Generate a plan from the request workspace before finalizing.</p></article>
         )}
+        {statusMessage ? <p role="status">{statusMessage}</p> : null}
       </section>
     </AppShell>
   );

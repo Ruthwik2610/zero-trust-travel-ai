@@ -501,6 +501,29 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("Do not finalize until an agent attaches verified provider options.")).toBeTruthy();
   });
 
+  it("selects itinerary options from the itinerary builder", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([generatedRequest]);
+    vi.mocked(updateCorporateRequest).mockImplementation(async (_id, payload) => ({
+      ...generatedRequest,
+      ...payload
+    }));
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9001" />);
+
+    expect(await screen.findByRole("heading", { name: "Itinerary Builder" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Select Lowest Cost" }));
+
+    await waitFor(() => {
+      expect(updateCorporateRequest).toHaveBeenCalledWith("TR-2026-9001", expect.objectContaining({
+        recommendedPlans: expect.arrayContaining([
+          expect.objectContaining({ name: "Lowest Cost", selected: true }),
+          expect.objectContaining({ name: "Policy Fit", selected: false })
+        ])
+      }));
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Itinerary option selected.");
+  });
+
   it("shows a safe manual follow-up state when approval email cannot be sent", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest]);
     vi.mocked(sendCorporateRequestNotification).mockRejectedValue(new Error("RESEND_API_KEY rejected for token secret"));
