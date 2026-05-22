@@ -224,6 +224,13 @@ As of plan recording, implementation had started after cleanup. The index was re
 - The selected itinerary is broken into flight, hotel, and transfer/request segments for agent review.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Itinerary Builder Controls Checkpoint
+
+- Itinerary builder now exposes an AI optimization action backed by the existing provider-backed plan generation API.
+- Itinerary builder now exposes finalization for the selected itinerary through the existing gated finalization API.
+- Blocked itinerary-builder finalization uses safe operational copy and does not display raw provider or credential errors.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

@@ -546,6 +546,62 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("Vegetarian meals")).toBeTruthy();
   });
 
+  it("optimizes itinerary options from the itinerary builder", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([generatedRequest]);
+    vi.mocked(generateCorporateTravelPlan).mockResolvedValue({
+      ...generatedRequest,
+      recommendedPlans: generatedRequest.recommendedPlans.map((plan) => ({
+        ...plan,
+        selected: plan.id === "plan-b"
+      }))
+    });
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9001" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Optimize With AI" }));
+
+    await waitFor(() => {
+      expect(generateCorporateTravelPlan).toHaveBeenCalledWith("TR-2026-9001");
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Itinerary optimized for review.");
+    expect(screen.getAllByRole("heading", { name: "Lowest Cost" }).length).toBeGreaterThan(0);
+  });
+
+  it("finalizes the selected itinerary from the itinerary builder after approval", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([{ ...generatedRequest, approvalStatus: "Received" }]);
+    vi.mocked(finalizeCorporateRequest).mockResolvedValue({
+      ...finalizedRequest,
+      id: "TR-2026-9001",
+      travellerName: "Vikram Rao"
+    });
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9001" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Finalize Selected Itinerary" }));
+
+    await waitFor(() => {
+      expect(finalizeCorporateRequest).toHaveBeenCalledWith("TR-2026-9001", {
+        agent_reviewed: true,
+        approval_status: "Received",
+        finalApproved: true
+      });
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Itinerary finalized.");
+    expect(screen.getByText("finalized")).toBeTruthy();
+  });
+
+  it("shows a safe blocked state when itinerary builder finalization fails", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([generatedRequest]);
+    vi.mocked(finalizeCorporateRequest).mockRejectedValue(new Error("OPENROUTER_API_KEY stack trace"));
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9001" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Finalize Selected Itinerary" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Finalization is blocked. Complete approval and agent review before finalizing.");
+    expect(screen.queryByText(/OPENROUTER_API_KEY/)).toBeNull();
+  });
+
   it("selects itinerary options from the itinerary builder", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([generatedRequest]);
     vi.mocked(updateCorporateRequest).mockImplementation(async (_id, payload) => ({

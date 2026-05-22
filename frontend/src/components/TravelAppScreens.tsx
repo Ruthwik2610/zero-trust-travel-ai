@@ -1332,6 +1332,32 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
     }
   }
 
+  async function optimizeItinerary() {
+    if (!request) return;
+    try {
+      const optimized = await generateCorporateTravelPlan(request.id);
+      setRequests((current) => current.map((item) => item.id === optimized.id ? optimized : item));
+      setStatusMessage("Itinerary optimized for review.");
+    } catch {
+      setStatusMessage("Optimization is unavailable. Continue with manual review.");
+    }
+  }
+
+  async function finalizeSelectedItinerary() {
+    if (!request) return;
+    try {
+      const finalized = await finalizeCorporateRequest(request.id, {
+        agent_reviewed: true,
+        approval_status: "Received",
+        finalApproved: true
+      });
+      setRequests((current) => current.map((item) => item.id === finalized.id ? finalized : item));
+      setStatusMessage("Itinerary finalized.");
+    } catch {
+      setStatusMessage("Finalization is blocked. Complete approval and agent review before finalizing.");
+    }
+  }
+
   return (
     <AppShell active="itineraries">
       <section className="page-heading">
@@ -1363,6 +1389,11 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
             <p>{selectedPlan.hotelSummary}</p>
             <h2>Transfer / Requests</h2>
             <p>{request?.specialRequests || request?.missingInformation || "No transfer or special requests recorded."}</p>
+            <div className="button-row">
+              <button className="primary-button" type="button" onClick={() => void optimizeItinerary()}><Sparkles size={16} /> Optimize With AI</button>
+              <button className="secondary-button" type="button" onClick={() => void finalizeSelectedItinerary()}><CheckCircle2 size={16} /> Finalize Selected Itinerary</button>
+            </div>
+            <StatusPill value={request?.status || "planning"} />
           </article>
         ) : null}
         {manualSourcingRequired ? (
