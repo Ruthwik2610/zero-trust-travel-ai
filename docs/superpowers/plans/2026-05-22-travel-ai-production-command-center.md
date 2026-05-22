@@ -168,6 +168,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Finalization updates the active workspace row and preserves backend gating for generated plan, agent review, and approval.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Request Workspace Export Checkpoint
+
+- Request workspace now downloads finalized itinerary XLSX exports through the existing corporate export API.
+- Export failures use the safe finalization-gate message rather than exposing backend exception text.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

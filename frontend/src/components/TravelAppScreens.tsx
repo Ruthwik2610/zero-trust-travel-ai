@@ -1242,6 +1242,21 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
     }
   }
 
+  async function downloadExport() {
+    if (!request) return;
+    try {
+      const blob = await downloadCorporateRequestExcel(request.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${request.id}-final-itinerary.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setNotification("Final itinerary is not ready. Complete approval and finalization before export.");
+    }
+  }
+
   return (
     <AppShell active="requests">
       <section className="page-heading">
@@ -1274,6 +1289,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
           <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
           <button className="secondary-button" type="button" onClick={() => void finalizeItinerary()} disabled={finalizingRequest || !request}><CheckCircle2 size={16} /> Finalize Itinerary</button>
           <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><FileSpreadsheet size={16} /> Send Final Itinerary</button>
+          <button className="secondary-button" type="button" onClick={() => void downloadExport()} disabled={!request}><Download size={16} /> Download Export</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
       </section>

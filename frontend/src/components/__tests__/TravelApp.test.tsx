@@ -553,6 +553,27 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("finalized")).toBeTruthy();
   });
 
+  it("downloads final itinerary exports from the request workspace", async () => {
+    const objectUrl = "blob:workspace-itinerary";
+    const createObjectUrl = vi.fn(() => objectUrl);
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
+    vi.mocked(listCorporateRequests).mockResolvedValue([finalizedRequest]);
+    vi.mocked(downloadCorporateRequestExcel).mockResolvedValue(new Blob(["itinerary"]));
+
+    render(<RequestWorkspaceScreen requestId="TR-2026-9003" />);
+
+    expect(await screen.findByText("Mira Kapoor")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Download Export" }));
+
+    await waitFor(() => {
+      expect(downloadCorporateRequestExcel).toHaveBeenCalledWith("TR-2026-9003");
+    });
+    expect(createObjectUrl).toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
+  });
+
   it("sends final itinerary emails with the itinerary attachment from the request workspace", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([finalizedRequest]);
     vi.mocked(sendCorporateRequestNotification).mockResolvedValue({
