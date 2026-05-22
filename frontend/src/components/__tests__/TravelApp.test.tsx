@@ -782,6 +782,18 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Document update email accepted by Resend.");
   });
 
+  it("shows loyalty programs and recent trips in the traveler dossier", async () => {
+    vi.mocked(getTraveler).mockResolvedValue(documentUpdateTraveler);
+
+    render(<TravelerDossierScreen travelerId="traveler_anika" />);
+
+    expect(await screen.findByRole("heading", { name: "Loyalty Programs" })).toBeTruthy();
+    expect(screen.getByText("United MileagePlus")).toBeTruthy();
+    expect(screen.getByText("Gold")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Recent Trips" })).toBeTruthy();
+    expect(screen.getByText("Delhi to Singapore")).toBeTruthy();
+  });
+
   it("filters the traveler roster by search text", async () => {
     vi.mocked(listTravelers).mockResolvedValue([
       documentUpdateTraveler,

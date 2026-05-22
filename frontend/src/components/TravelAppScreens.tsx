@@ -1550,12 +1550,22 @@ export function TravelerDossierScreen({ travelerId }: { travelerId: string }) {
       <section className="workspace-grid">
         <article className="ops-card detail-card"><h2>Travel Preferences</h2><p>Seat: {traveler?.seat_preference || "Not set"}</p><p>Meal: {traveler?.meal_preference || "Not set"}</p><p>Hotel: {traveler?.hotel_preference || "Not set"}</p></article>
         <article className="ops-card detail-card">
+          <h2>Loyalty Programs</h2>
+          {traveler?.loyalty_programs.length ? traveler.loyalty_programs.map((program) => (
+            <p key={`${program.provider}-${program.tier}`}><strong>{program.provider}</strong> {program.tier}</p>
+          )) : <p>No loyalty programs linked</p>}
+        </article>
+        <article className="ops-card detail-card">
           <h2>Travel Documents</h2>
           {traveler?.documents.map((doc) => <p key={doc.label}><strong>{doc.label}</strong> {doc.status}</p>) || <p>No documents loaded</p>}
           <button className="secondary-button" type="button" onClick={() => void sendDocumentUpdateEmail()} disabled={sendingNotification || !traveler}><Send size={16} /> Send Document Update</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
         <article className="ops-card detail-card"><h2>Policy Guard</h2>{traveler?.policy_notes.map((note) => <p key={note}>{note}</p>) || <p>No policy exceptions loaded</p>}</article>
+        <article className="ops-card detail-card">
+          <h2>Recent Trips</h2>
+          {traveler?.recent_trips.length ? traveler.recent_trips.map((trip) => <p key={trip}>{trip}</p>) : <p>No recent trips loaded</p>}
+        </article>
       </section>
     </AppShell>
   );
