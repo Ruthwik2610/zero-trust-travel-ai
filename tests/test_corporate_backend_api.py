@@ -357,6 +357,34 @@ def test_final_itinerary_export_is_blocked_until_request_is_finalized(tmp_path, 
     assert planned_export.json()["detail"] == "Final itinerary is not ready"
 
 
+def test_blocked_finalization_and_export_attempts_are_audited(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    created = client.post("/api/corporate/requests", json=_corporate_payload(), headers=_headers())
+    request_id = created.json()["id"]
+
+    finalize = client.post(
+        f"/api/corporate/requests/{request_id}/finalize",
+        json={"agent_reviewed": True},
+        headers=_headers(purpose="finalize approved corporate itinerary"),
+    )
+    export = client.get(
+        f"/api/corporate/requests/{request_id}/export.xlsx",
+        headers=_headers(purpose="download finalized corporate itinerary excel"),
+    )
+
+    assert finalize.status_code == 400
+    assert export.status_code == 400
+    audit = client.get(
+        "/api/admin/audit",
+        headers=_headers("admin.user@unipro.com", "review security audit events"),
+    )
+    assert audit.status_code == 200
+    events = audit.json()
+    assert any(event["event_type"] == "corporate.finalize.blocked" and event["decision"] == "deny" for event in events)
+    assert any(event["event_type"] == "corporate.request_export.blocked" and event["decision"] == "deny" for event in events)
+    assert "anika.rao@unipro.com" not in audit.text
+
+
 def test_generate_plan_for_hyderabad_to_johannesburg_checks_documents_budget_and_policy(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     imported = client.post(

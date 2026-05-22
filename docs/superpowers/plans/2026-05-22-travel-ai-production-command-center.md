@@ -114,6 +114,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Raw backend exception text is not displayed in the export failure state.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Blocked Finalization Audit Checkpoint
+
+- Blocked finalization and blocked final-itinerary export attempts now create deny audit events.
+- Audit messages use safe operational text and do not expose traveler email, provider credentials, or stack traces.
+- Verified after this slice: backend pytest.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

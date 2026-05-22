@@ -461,6 +461,7 @@ def finalize_corporate_request(
         or existing.status == "Cancelled"
         or (approval_required and approval_status != "Received")
     ):
+        audit_security_decision(store, context, "corporate.finalize.blocked", "Final itinerary is not ready.", purpose, "deny", request_id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Final itinerary is not ready")
     updated = existing.model_copy(
         update={
@@ -484,6 +485,7 @@ def download_corporate_request_excel(
     purpose = protected_purpose(x_travel_purpose, store, context, "corporate.request_export.denied")
     request = _load_authorized_corporate_request(store, context, request_id, purpose)
     if request.status != "Finalized" or not request.generated_plan:
+        audit_security_decision(store, context, "corporate.request_export.blocked", "Final itinerary is not ready.", purpose, "deny", request.id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Final itinerary is not ready")
     audit_security_decision(store, context, "corporate.request_export.allowed", "Corporate request Excel export generated.", purpose, "allow", request.id)
     return StreamingResponse(
