@@ -863,7 +863,7 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
       link.click();
       URL.revokeObjectURL(url);
     } catch {
-      setStatusMessage("Final itinerary Excel export is unavailable. Please retry after the service is back.");
+      setStatusMessage("Final itinerary is not ready. Complete approval and finalization before export.");
     }
   }
 

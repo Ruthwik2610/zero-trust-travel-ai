@@ -424,6 +424,20 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
   });
 
+  it("shows a finalization gate message when export is blocked", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([{ ...finalizedRequest, status: "finalized", finalApproved: true }]);
+    vi.mocked(downloadCorporateRequestExcel).mockRejectedValue(new Error("Final itinerary is not ready: stack trace"));
+
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9003")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Approval & Finalize" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Download Export/i }));
+
+    expect(await screen.findByText("Final itinerary is not ready. Complete approval and finalization before export.")).toBeTruthy();
+    expect(screen.queryByText(/stack trace/i)).toBeNull();
+  });
+
   it("uses contextual planning chat without claiming a booking", async () => {
     render(<TravelerDashboard />);
 

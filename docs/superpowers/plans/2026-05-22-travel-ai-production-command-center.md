@@ -108,6 +108,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Non-finalized exports return the same safe operational message used by finalization gating: `Final itinerary is not ready`.
 - Verified after this slice: backend pytest.
 
+### 2026-05-22 Export UI Gate Checkpoint
+
+- Dashboard export action now surfaces finalization-gate copy when the backend blocks XLSX export.
+- Raw backend exception text is not displayed in the export failure state.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
