@@ -250,6 +250,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Traveler dossier now shows recent trips without exposing passport numbers or raw document identifiers.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Local Release Gate Checkpoint
+
+- Final local release gate passed with backend pytest, frontend Vitest, webpack production build, desktop Playwright E2E, and mobile Playwright E2E.
+- Playwright covered login role selection, agent request lifecycle, provider-backed plan mock, finalization/export flow, and admin live metrics/audit screens.
+- Generated local artifacts were removed after verification.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
