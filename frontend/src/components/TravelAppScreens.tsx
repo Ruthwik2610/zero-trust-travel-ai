@@ -1152,6 +1152,7 @@ export function CustomerIntakeScreen() {
 export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
   const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
   const [notification, setNotification] = useState("");
+  const [sendingNotification, setSendingNotification] = useState(false);
 
   useEffect(() => {
     listCorporateRequests().then(setRequests).catch(() => setRequests([]));
@@ -1161,13 +1162,21 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
 
   async function sendApprovalEmail() {
     if (!request) return;
-    const result = await sendCorporateRequestNotification(request.id, {
-      kind: "approval_request",
-      to: [request.travellerEmail || "manager@example.com"],
-      note: "Please review this travel plan.",
-      attach_itinerary: false
-    });
-    setNotification(result.safe_message);
+    setSendingNotification(true);
+    setNotification("Sending approval email...");
+    try {
+      const result = await sendCorporateRequestNotification(request.id, {
+        kind: "approval_request",
+        to: [request.travellerEmail || "manager@example.com"],
+        note: "Please review this travel plan.",
+        attach_itinerary: false
+      });
+      setNotification(result.safe_message);
+    } catch {
+      setNotification("Approval email could not be sent. Continue with manual follow-up.");
+    } finally {
+      setSendingNotification(false);
+    }
   }
 
   return (
@@ -1197,7 +1206,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
         <article className="ops-card detail-card">
           <h2>Policy & Budget</h2>
           <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy and budget posture."}</pre>
-          <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()}><Send size={16} /> Send Approval Email</button>
+          <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
       </section>

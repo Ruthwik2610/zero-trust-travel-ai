@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, TravelerDashboard } from "../TravelAppScreens";
+import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, RequestWorkspaceScreen, TravelerDashboard } from "../TravelAppScreens";
 import {
   createCorporateRequest,
   demoLogin,
@@ -11,6 +11,7 @@ import {
   generateCorporateTravelPlan,
   getCorporateAdminSummary,
   listCorporateRequests,
+  sendCorporateRequestNotification,
   updateCorporateRequest,
   uploadCorporateRequests
 } from "@/lib/api";
@@ -29,6 +30,7 @@ vi.mock("@/lib/api", () => ({
     return raw ? JSON.parse(raw) : null;
   }),
   listCorporateRequests: vi.fn(),
+  sendCorporateRequestNotification: vi.fn(),
   storeAuthSession: vi.fn((session) => {
     window.localStorage.setItem("travel_ai_api_token", session.access_token);
     window.localStorage.setItem("travel_ai_auth_context", JSON.stringify(session.user));
@@ -190,6 +192,18 @@ beforeEach(() => {
     status: "finalized"
   }));
   vi.mocked(getCorporateAdminSummary).mockResolvedValue(adminSummary);
+  vi.mocked(sendCorporateRequestNotification).mockResolvedValue({
+    id: "email_event_1",
+    request_id: "TR-2026-9001",
+    kind: "approval_request",
+    provider: "resend",
+    status: "sent",
+    to: ["vikram.rao@acme.com"],
+    subject: "Approval requested",
+    provider_message_id: "email_123",
+    safe_message: "Email accepted by Resend.",
+    created_at: "2026-05-22T00:00:00.000Z"
+  });
   vi.mocked(downloadCorporateExcelTemplate).mockResolvedValue(new Blob(["template"]));
   vi.mocked(downloadCorporateRequestExcel).mockResolvedValue(new Blob(["itinerary"]));
   vi.mocked(uploadCorporateRequests).mockResolvedValue({
@@ -425,6 +439,18 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(await screen.findByRole("heading", { name: "Itinerary Builder" })).toBeTruthy();
     expect(await screen.findByText("Manual Sourcing Required")).toBeTruthy();
     expect(screen.getByText("Do not finalize until an agent attaches verified provider options.")).toBeTruthy();
+  });
+
+  it("shows a safe manual follow-up state when approval email cannot be sent", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest]);
+    vi.mocked(sendCorporateRequestNotification).mockRejectedValue(new Error("RESEND_API_KEY rejected for token secret"));
+
+    render(<RequestWorkspaceScreen requestId="TR-2026-9001" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Send Approval Email/i }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Approval email could not be sent. Continue with manual follow-up.");
+    expect(screen.queryByText(/RESEND_API_KEY/)).toBeNull();
   });
 
   it("renders admin metrics and uploads Excel files to the backend route", async () => {
