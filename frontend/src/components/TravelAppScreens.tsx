@@ -44,6 +44,7 @@ import {
   downloadCorporateRequestExcel,
   finalizeCorporateRequest,
   generateCorporateTravelPlan,
+  getAuditEvents,
   getCorporateAdminSummary,
   getStoredAuthContext,
   getPolicy,
@@ -62,6 +63,7 @@ import {
 } from "@/lib/api";
 import type {
   AuthContext,
+  AuditEvent,
   CorporateAdminSummary,
   CorporateCreateRequest,
   CorporatePlanOption,
@@ -1628,6 +1630,7 @@ function csvCell(value: string) {
 
 export function AdminDashboard() {
   const [summary, setSummary] = useState<CorporateAdminSummary>(() => summaryFromRequests([]));
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<CorporateUploadResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "uploading">("idle");
@@ -1644,6 +1647,13 @@ export function AdminDashboard() {
       })
       .catch(() => {
         if (mounted) setSummary(summaryFromRequests([]));
+      });
+    getAuditEvents()
+      .then((events) => {
+        if (mounted) setAuditEvents(events.slice(0, 5));
+      })
+      .catch(() => {
+        if (mounted) setAuditEvents([]);
       });
     return () => {
       mounted = false;
@@ -1755,6 +1765,26 @@ export function AdminDashboard() {
           {summary.commonDestinations.length ? summary.commonDestinations.map((item) => (
             <p key={item.destination}><span>{item.destination}</span><strong>{item.count}</strong></p>
           )) : <p><span>No destination data yet</span><strong>0</strong></p>}
+        </div>
+      </section>
+
+      <section className="ops-card table-card">
+        <div className="card-title-row">
+          <h2>Recent Audit Activity</h2>
+          <History size={18} />
+        </div>
+        <div className="request-table">
+          <div className="request-table-head"><span>Event</span><span>Decision</span><span>Message</span><span>Time</span></div>
+          {auditEvents.length ? auditEvents.map((event) => (
+            <div className="request-table-row" key={event.id}>
+              <span>{event.event_type}</span>
+              <StatusPill value={event.decision || "record"} />
+              <span>{event.message}</span>
+              <span>{formatUpdated(event.created_at)}</span>
+            </div>
+          )) : (
+            <div className="request-table-row"><span>No audit events loaded</span><span>record</span><span>Operational activity will appear here.</span><span>Now</span></div>
+          )}
         </div>
       </section>
     </AppShell>

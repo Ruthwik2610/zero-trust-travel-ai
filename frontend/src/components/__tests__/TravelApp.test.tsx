@@ -9,6 +9,7 @@ import {
   downloadCorporateRequestExcel,
   finalizeCorporateRequest,
   generateCorporateTravelPlan,
+  getAuditEvents,
   getTraveler,
   getCorporateAdminSummary,
   listCorporateRequests,
@@ -26,6 +27,7 @@ vi.mock("@/lib/api", () => ({
   downloadCorporateRequestExcel: vi.fn(),
   finalizeCorporateRequest: vi.fn(),
   generateCorporateTravelPlan: vi.fn(),
+  getAuditEvents: vi.fn(),
   getTraveler: vi.fn(),
   getCorporateAdminSummary: vi.fn(),
   getStoredAuthContext: vi.fn(() => {
@@ -208,6 +210,7 @@ beforeEach(() => {
     originalRequest: `${payload.travellerName} needs ${payload.origin} to ${payload.destination}.`
   }));
   vi.mocked(generateCorporateTravelPlan).mockResolvedValue(generatedRequest);
+  vi.mocked(getAuditEvents).mockResolvedValue([]);
   vi.mocked(getTraveler).mockResolvedValue(documentUpdateTraveler);
   vi.mocked(listTravelers).mockResolvedValue([documentUpdateTraveler]);
   vi.mocked(updateCorporateRequest).mockResolvedValue(generatedRequest);
@@ -780,6 +783,29 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     });
     expect(await screen.findByText(/created from/i)).toBeTruthy();
     expect(await screen.findByText("TR-2026-9020")).toBeTruthy();
+  });
+
+  it("renders recent safe audit events in the admin dashboard", async () => {
+    window.localStorage.setItem("travel_ai_selected_role", "admin");
+    vi.mocked(getAuditEvents).mockResolvedValue([
+      {
+        id: "audit_1",
+        trip_id: "TR-2026-9001",
+        actor_id: null,
+        event_type: "corporate.finalize.allowed",
+        message: "Corporate final itinerary generated.",
+        purpose: "finalize reviewed corporate itinerary",
+        decision: "allow",
+        created_at: "2026-05-22T00:00:00.000Z"
+      }
+    ]);
+
+    render(<AdminDashboard />);
+
+    expect(await screen.findByText("Recent Audit Activity")).toBeTruthy();
+    expect(await screen.findByText("corporate.finalize.allowed")).toBeTruthy();
+    expect(screen.getByText("Corporate final itinerary generated.")).toBeTruthy();
+    expect(screen.queryByText("TR-2026-9001")).toBeNull();
   });
 
   it("keeps the admin screen restricted for non-admin selected role", async () => {

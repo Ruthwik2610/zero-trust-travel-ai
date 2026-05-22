@@ -180,6 +180,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Selection failures keep a local selected state and show safe operational copy.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Admin Audit Activity Checkpoint
+
+- Admin dashboard now loads recent sanitized audit events through the existing admin audit API.
+- The dashboard shows event type, decision, safe message, and timestamp without exposing actor ids, trip ids, provider secrets, or raw errors.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
