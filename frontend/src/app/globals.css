@@ -460,14 +460,6 @@ label {
   text-transform: uppercase;
 }
 
-.sidebar-travel-image {
-  margin: 12px -10px 0;
-  min-height: 335px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.2)),
-    var(--travel-wallpaper) center / cover;
-}
-
 .sidebar-user {
   min-height: 58px;
   display: flex;

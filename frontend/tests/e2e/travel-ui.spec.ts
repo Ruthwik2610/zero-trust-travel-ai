@@ -107,18 +107,35 @@ const generatedPlan = {
   approval_status: "Waiting for Approval"
 };
 
-function withPlan(update = {}) {
+function generatedPlanFor(request: typeof baseRequest) {
+  const traveler = request.traveller_details.traveler_name;
+  const purpose = request.travel_details.trip_purpose.toLowerCase();
   return {
-    ...baseRequest,
+    ...generatedPlan,
+    request_summary: `${traveler} needs ${purpose} travel from ${request.travel_details.origin} to ${request.travel_details.destination}.`
+  };
+}
+
+function withPlan(request = baseRequest, update = {}) {
+  return {
+    ...request,
     status: "Waiting for Approval",
     approval_status: "Required",
-    generated_plan: generatedPlan,
+    generated_plan: generatedPlanFor(request),
     updated_at: "2026-05-20T09:00:00.000Z",
     ...update
   };
 }
 
 async function mockBackend(page: Page) {
+  let createdRequest: typeof baseRequest | null = null;
+
+  function requestFromUrl(url: string) {
+    const match = url.match(/\/api\/corporate\/requests\/([^/]+)/);
+    const requestId = match?.[1];
+    return requestId === createdRequest?.id ? createdRequest : baseRequest;
+  }
+
   await page.route("**/api/auth/demo-login", async (route) => {
     const body = route.request().postDataJSON() as { email?: string };
     const email = body.email || authUser.email;
@@ -136,20 +153,21 @@ async function mockBackend(page: Page) {
   await page.route("**/api/corporate/requests", async (route) => {
     if (route.request().method() === "POST") {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
+      createdRequest = {
+        ...baseRequest,
+        id: "corp_req_created",
+        traveller_details: payload.traveller_details as typeof baseRequest.traveller_details,
+        company_details: payload.company_details as typeof baseRequest.company_details,
+        travel_details: payload.travel_details as typeof baseRequest.travel_details,
+        preferences: payload.preferences as typeof baseRequest.preferences,
+        budgets: payload.budgets as typeof baseRequest.budgets,
+        special_requests: payload.special_requests as typeof baseRequest.special_requests,
+        updated_at: "2026-05-20T10:00:00.000Z"
+      };
       await route.fulfill({
         status: 201,
         contentType: "application/json",
-        body: JSON.stringify({
-          ...baseRequest,
-          id: "corp_req_created",
-          traveller_details: payload.traveller_details,
-          company_details: payload.company_details,
-          travel_details: payload.travel_details,
-          preferences: payload.preferences,
-          budgets: payload.budgets,
-          special_requests: payload.special_requests,
-          updated_at: "2026-05-20T10:00:00.000Z"
-        })
+        body: JSON.stringify(createdRequest)
       });
       return;
     }
@@ -162,14 +180,15 @@ async function mockBackend(page: Page) {
   await page.route("**/api/corporate/requests/*/plan", async (route) => {
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify(withPlan())
+      body: JSON.stringify(withPlan(requestFromUrl(route.request().url())))
     });
   });
 
   await page.route("**/api/corporate/requests/*/finalize", async (route) => {
+    const request = requestFromUrl(route.request().url());
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify(withPlan({ status: "Finalized", approval_status: "Received" }))
+      body: JSON.stringify(withPlan(request, { status: "Finalized", approval_status: "Received" }))
     });
   });
 
@@ -209,6 +228,24 @@ async function mockBackend(page: Page) {
       })
     });
   });
+
+  await page.route("**/api/admin/audit", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "audit_e2e",
+          trip_id: "corp_req_e2e",
+          actor_id: null,
+          event_type: "corporate.finalize.allowed",
+          message: "Corporate final itinerary generated.",
+          purpose: "finalize reviewed corporate itinerary",
+          decision: "allow",
+          created_at: "2026-05-20T10:15:00.000Z"
+        }
+      ])
+    });
+  });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -230,8 +267,8 @@ test("agent completes the MVP request lifecycle", async ({ page }) => {
   await page.waitForURL("**/dashboard");
 
   await expect(page.getByRole("heading", { name: "Agent Operations Dashboard" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Vikram Rao" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Acme Infrastructure" })).toBeVisible();
+  await expect(page.getByText("Vikram Rao").first()).toBeVisible();
+  await expect(page.getByText("Acme Infrastructure").first()).toBeVisible();
 
   await page.getByRole("button", { name: /New Request/i }).click();
   await page.getByLabel("Traveller name").fill("Raja Demo");
@@ -245,10 +282,12 @@ test("agent completes the MVP request lifecycle", async ({ page }) => {
   await page.getByLabel("Travel purpose").fill("Business meeting");
   await page.getByRole("button", { name: /Create Request/i }).click();
 
-  await expect(page.getByRole("cell", { name: "Raja Demo" })).toBeVisible();
+  await expect(page.getByText("Raja Demo").first()).toBeVisible();
   await page.getByRole("button", { name: /Generate AI Plan/i }).click();
+  await page.getByRole("tab", { name: "Plan" }).click();
   await expect(page.getByText("Best within budget").first()).toBeVisible();
-  await expect(page.getByLabel("AI Summary")).toContainText("Vikram Rao needs client meeting travel");
+  await expect(page.getByLabel("AI Summary")).toContainText("Raja Demo needs business meeting travel");
+  await page.getByRole("tab", { name: "Approval & Finalize" }).click();
   await page.getByLabel("Approval status").selectOption("Received");
   const finalizeButton = page.getByRole("button", { name: /Generate Final Itinerary/i });
   await finalizeButton.scrollIntoViewIfNeeded();

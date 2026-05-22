@@ -394,7 +394,6 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
           {canReadPolicy ? <Link className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /> Policy</Link> : null}
           {canReadAdmin ? <Link className={active === "admin" ? "active" : ""} href="/admin"><BarChart3 size={18} /> Application Admin</Link> : null}
         </nav>
-        <div className="sidebar-travel-image" aria-hidden="true" />
         <div className="sidebar-footer">
           <div className="sidebar-user">
             <span className="avatar">{initialsFor(displayEmail)}</span>

@@ -186,6 +186,13 @@ As of plan recording, implementation had started after cleanup. The index was re
 - The dashboard shows event type, decision, safe message, and timestamp without exposing actor ids, trip ids, provider secrets, or raw errors.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Command Center E2E And Sidebar Checkpoint
+
+- Playwright desktop flow now covers login, dashboard request lifecycle, mocked provider-backed plan generation, finalization, export, and admin live metrics/audit data.
+- E2E mocks preserve the active request through plan and finalization responses, so lifecycle assertions follow the same request the agent created.
+- The decorative sidebar travel picture was removed while keeping the sidebar navigation and brand lockup intact.
+- Verified after this slice: backend pytest, frontend Vitest, Playwright desktop E2E, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

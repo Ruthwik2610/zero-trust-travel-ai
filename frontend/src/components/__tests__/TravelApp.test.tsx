@@ -367,6 +367,13 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.queryByRole("link", { name: /Application Admin/i })).toBeNull();
   });
 
+  it("does not render the decorative picture in the sidebar", async () => {
+    const { container } = render(<TravelerDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Agent Operations Dashboard" })).toBeTruthy();
+    expect(container.querySelector(".sidebar-travel-image")).toBeNull();
+  });
+
   it("lets an agent create a travel request from the dashboard", async () => {
     render(<TravelerDashboard />);
 
