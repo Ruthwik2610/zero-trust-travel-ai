@@ -256,6 +256,14 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Playwright covered login role selection, agent request lifecycle, provider-backed plan mock, finalization/export flow, and admin live metrics/audit screens.
 - Generated local artifacts were removed after verification.
 
+### 2026-05-22 VPS Deployment Checkpoint
+
+- Deployed the nested standalone app to `/opt/zero-trust-travel-ai` using `scripts/deploy_vps.sh`; parent DataChat changes were not deployed.
+- Verified `travel-ai-backend.service` and `travel-ai-frontend.service` active, backend `/health` OK, local frontend pages OK, Nginx-mounted `/travel-ai/*` pages OK, and public share root/pages OK.
+- Live backend smoke produced an agent plan with Duffel API flight provider and Booking.com RapidAPI hotel provider; corporate admin summary returned 200.
+- Resend notification endpoint returned the safe `configuration_required` state because production Resend credentials are not configured on the VPS; no raw provider error was exposed.
+- Temporary smoke request and email rows were removed from the production SQLite database after verification.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
