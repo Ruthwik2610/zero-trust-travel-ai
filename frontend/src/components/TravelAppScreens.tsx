@@ -1497,13 +1497,25 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
   const [selected, setSelected] = useState<PolicyGroup | null>(null);
 
   useEffect(() => {
-    listPolicies().then((items) => {
-      setPolicies(items);
-      setSelected(policyId ? items.find((item) => item.id === policyId) || null : items[0] || null);
-    }).catch(() => {
-      setPolicies([]);
-      setSelected(null);
-    });
+    let active = true;
+    async function loadPolicies() {
+      const [items, detail] = await Promise.all([
+        listPolicies().catch(() => []),
+        policyId ? getPolicy(policyId).catch(() => null) : Promise.resolve(null)
+      ]);
+      if (!active) return;
+      const merged = detail
+        ? items.some((item) => item.id === detail.id)
+          ? items.map((item) => item.id === detail.id ? detail : item)
+          : [detail, ...items]
+        : items;
+      setPolicies(merged);
+      setSelected(policyId ? detail || merged.find((item) => item.id === policyId) || null : merged[0] || null);
+    }
+    void loadPolicies();
+    return () => {
+      active = false;
+    };
   }, [policyId]);
 
   return (

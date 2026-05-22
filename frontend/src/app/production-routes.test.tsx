@@ -9,7 +9,7 @@ import PolicyPage from "./policy/page";
 import PolicyDetailPage from "./policy/[id]/page";
 import PolicyReviewPage from "./policy/[id]/review/page";
 import PolicyActivityPage from "./policy/activity/page";
-import { approvePolicyRevision, listPolicyActivity, listPolicyVersions, requestPolicyRevisionChanges } from "@/lib/api";
+import { approvePolicyRevision, getPolicy, listPolicyActivity, listPolicyVersions, requestPolicyRevisionChanges } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getStoredAuthContext: vi.fn(() => ({
@@ -89,6 +89,25 @@ describe("production command center routes", () => {
       expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
     });
     expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
+  });
+
+  it("loads the selected policy detail route directly", async () => {
+    vi.mocked(getPolicy).mockResolvedValue({
+      id: "policy_global_travel_2024",
+      client_name: "Global Travel Policy 2024",
+      business_unit: "Corporate",
+      status: "Active",
+      active_rules: [{ label: "Hotel Cap", value: "USD 275", status: "Active" }],
+      revisions: [],
+      compliance_score: 94,
+      updated_at: "2026-05-22T00:00:00.000Z"
+    });
+
+    render(await PolicyDetailPage({ params: Promise.resolve({ id: "policy_global_travel_2024" }) }));
+
+    expect((await screen.findAllByText("Global Travel Policy 2024")).length).toBeGreaterThan(0);
+    expect(screen.getByText("USD 275")).toBeTruthy();
+    expect(getPolicy).toHaveBeenCalledWith("policy_global_travel_2024");
   });
 
   it("approves policy revisions from the review dashboard", async () => {

@@ -199,6 +199,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Approve and request-changes actions send the reviewer-entered comment, with existing safe default comments when the field is blank.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Policy Detail Loading Checkpoint
+
+- The `/policy/[id]` detail route now loads the selected policy directly through the policy-detail API.
+- Loaded policy details are merged into the policy card list so active rules render even when the list endpoint is empty or stale.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
