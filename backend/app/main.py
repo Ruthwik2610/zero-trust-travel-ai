@@ -135,9 +135,11 @@ def create_plan(
         authorize_traveler_agent_chain(context, purpose)
         response = plan_trip(request, owner_id=context.user_id, owner_department=context.department)
         for event in response.audit_events:
+            event.trip_id = event.trip_id or response.trip.id
             event.actor_id = context.user_id
             event.purpose = purpose
             event.decision = "allow"
+            store.save_audit_event(event)
         audit_security_decision(store, context, "agent.plan.allowed", "Traveler planning agent chain authorized.", purpose, "allow", response.trip.id)
         return response
     except SecurityError as exc:

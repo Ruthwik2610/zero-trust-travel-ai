@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AdminDashboard, LoginScreen, TravelerDashboard } from "../TravelAppScreens";
+import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, TravelerDashboard } from "../TravelAppScreens";
 import {
   createCorporateRequest,
   demoLogin,
@@ -401,6 +401,30 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(await screen.findByText(/Here are the best policy fit options/i)).toBeTruthy();
     expect(screen.getAllByText(/AI Planning Assistant/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/booked/i)).toBeNull();
+  });
+
+  it("flags itinerary options that require manual provider sourcing", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([
+      {
+        ...generatedRequest,
+        id: "TR-2026-9100",
+        recommendedPlans: [
+          {
+            ...generatedRequest.recommendedPlans[0],
+            flightSummary: "Manual sourcing required for Duffel flight inventory.",
+            hotelSummary: "Manual sourcing required for hotel availability.",
+            totalAmount: 0,
+            policyFit: "Needs manual review"
+          }
+        ]
+      }
+    ]);
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9100" />);
+
+    expect(await screen.findByRole("heading", { name: "Itinerary Builder" })).toBeTruthy();
+    expect(await screen.findByText("Manual Sourcing Required")).toBeTruthy();
+    expect(screen.getByText("Do not finalize until an agent attaches verified provider options.")).toBeTruthy();
   });
 
   it("renders admin metrics and uploads Excel files to the backend route", async () => {

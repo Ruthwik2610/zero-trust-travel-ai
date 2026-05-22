@@ -208,6 +208,21 @@ def test_plan_response_prefers_direct_duffel_api_when_configured(tmp_path, monke
     assert body["trip"]["flight_offers"][0]["price_usd"] == 612
     assert any(event["event_type"] == "duffel.api.search" for event in body["audit_events"])
     assert calls[0][1]["headers"]["Authorization"] == "Bearer test-duffel-token"
+    assert calls[0][1]["headers"]["Duffel-Version"] == "v2"
+    assert calls[0][1]["headers"]["Accept-Encoding"] == "gzip"
+    assert calls[0][1]["params"] == {"return_offers": True, "supplier_timeout": 10000}
+    assert calls[0][1]["json"]["data"]["slices"] == [
+        {"origin": "SFO", "destination": "JFK", "departure_date": _request_payload()["depart_date"]},
+        {"origin": "JFK", "destination": "SFO", "departure_date": _request_payload()["return_date"]},
+    ]
+    assert calls[0][1]["json"]["data"]["passengers"] == [{"type": "adult"}, {"type": "adult"}]
+    assert calls[0][1]["json"]["data"]["cabin_class"] == "economy"
+    assert not any("/orders" in call[0] for call in calls)
+
+    audit = client.get("/api/admin/audit", headers=_headers("admin.user@unipro.com", "review security audit events"))
+    assert audit.status_code == 200
+    assert any(event["event_type"] == "duffel.api.search" for event in audit.json())
+    assert "test-duffel-token" not in audit.text
 
 
 def test_plan_response_uses_booking_demand_api_when_configured(tmp_path, monkeypatch):
@@ -452,6 +467,8 @@ def test_chat_endpoint_uses_openrouter_and_records_audit(tmp_path, monkeypatch):
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-openrouter-key"
     assert captured["json"]["model"] == "deepseek/deepseek-v4-flash"
+    assert captured["json"]["provider"] == {"order": ["DeepSeek"], "allow_fallbacks": False}
+    assert captured["json"]["stream"] is False
 
     audit = client.get("/api/admin/audit", headers=_headers("admin.user@unipro.com", "review security audit events"))
     assert audit.status_code == 200

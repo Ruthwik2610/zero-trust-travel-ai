@@ -532,10 +532,12 @@ def _duffel_api_offers(request: TravelRequest, actor_id: str) -> tuple[list[Offe
         ]
         if request.return_date:
             slices.append({"origin": slices[0]["destination"], "destination": slices[0]["origin"], "departure_date": request.return_date.isoformat()})
+        supplier_timeout = _int_or_none(os.getenv("DUFFEL_SUPPLIER_TIMEOUT_MS")) or 10000
         response = httpx.post(
             f"{base_url}/air/offer_requests",
-            params={"return_offers": "true", "supplier_timeout": os.getenv("DUFFEL_SUPPLIER_TIMEOUT_MS", "10000")},
+            params={"return_offers": True, "supplier_timeout": supplier_timeout},
             headers={
+                "Accept-Encoding": "gzip",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "Duffel-Version": os.getenv("DUFFEL_VERSION", "v2"),
@@ -804,6 +806,7 @@ def _chat_completion(messages: list[dict[str, str]], max_tokens: int, json_respo
             "messages": messages,
             "temperature": 0.2,
             "max_tokens": max_tokens,
+            "stream": False,
         }
         if json_response:
             body["response_format"] = {"type": "json_object"}

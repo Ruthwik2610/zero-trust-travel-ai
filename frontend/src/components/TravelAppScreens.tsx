@@ -1215,6 +1215,10 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
   const request = requests.find((item) => item.id === requestId) || requests[0] || null;
   const plans = request?.recommendedPlans || [];
   const total = plans[0]?.totalAmount || request?.budgetAmount || 0;
+  const manualSourcingRequired = plans.some((plan) => {
+    const text = `${plan.flightSummary} ${plan.hotelSummary} ${plan.policyFit}`.toLowerCase();
+    return text.includes("manual sourcing") || text.includes("manual review");
+  });
 
   return (
     <AppShell active="itineraries">
@@ -1231,6 +1235,12 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
           <div className="progress-track"><span style={{ width: "72%" }} /></div>
           <p>{request?.budgetPolicyCheck || "Budget check pending."}</p>
         </article>
+        {manualSourcingRequired ? (
+          <article className="ops-card detail-card">
+            <div className="card-title-row"><h2><AlertTriangle size={18} /> Manual Sourcing Required</h2><StatusPill value="Needs Review" /></div>
+            <p>Do not finalize until an agent attaches verified provider options.</p>
+          </article>
+        ) : null}
         {plans.length ? plans.map((plan) => (
           <article className="ops-card plan-card" key={plan.id}>
             <div className="plan-card-head"><h2>{plan.name}</h2><StatusPill value={plan.policyFit || "Needs Review"} /></div>

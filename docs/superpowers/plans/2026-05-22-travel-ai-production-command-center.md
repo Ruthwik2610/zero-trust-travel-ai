@@ -82,6 +82,14 @@
 
 As of plan recording, implementation had started after cleanup. The index was reset, ignored artifacts were removed, and backend domain work began by adding new model classes and store methods. Continue by finishing FastAPI endpoint wiring, adding the Resend mail helper, updating frontend API/types/routes, then implementing the UI screens.
 
+### 2026-05-22 Provider Hardening Checkpoint
+
+- Provider audit events from `/api/agent/plan` are persisted into the admin audit log with sanitized actor output.
+- Duffel direct offer search now sends the documented v2 create-offer-request shape: `Duffel-Version: v2`, gzip accept encoding, `return_offers=true`, integer `supplier_timeout`, slices, passengers, cabin class, and no order creation.
+- OpenRouter chat completions now explicitly use DeepSeek provider routing with fallbacks disabled and non-streaming responses.
+- Itinerary builder surfaces manual-sourcing options with a visible review banner so unavailable provider inventory cannot look finalized.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
