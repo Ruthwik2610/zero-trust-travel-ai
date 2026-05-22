@@ -510,6 +510,37 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.queryByText(/RESEND_API_KEY/)).toBeNull();
   });
 
+  it("sends final itinerary emails with the itinerary attachment from the request workspace", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([finalizedRequest]);
+    vi.mocked(sendCorporateRequestNotification).mockResolvedValue({
+      id: "email_event_final_itinerary",
+      request_id: "TR-2026-9003",
+      kind: "final_itinerary",
+      provider: "resend",
+      status: "sent",
+      to: ["mira.kapoor@acme.com"],
+      subject: "Final itinerary",
+      provider_message_id: "email_final_123",
+      safe_message: "Final itinerary email accepted by Resend.",
+      created_at: "2026-05-22T00:00:00.000Z"
+    });
+
+    render(<RequestWorkspaceScreen requestId="TR-2026-9003" />);
+
+    expect(await screen.findByText("Mira Kapoor")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send Final Itinerary" }));
+
+    await waitFor(() => {
+      expect(sendCorporateRequestNotification).toHaveBeenCalledWith("TR-2026-9003", {
+        kind: "final_itinerary",
+        to: ["mira.kapoor@acme.com"],
+        note: "Final itinerary after agent review and approval. This is not a booking confirmation.",
+        attach_itinerary: true
+      });
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Final itinerary email accepted by Resend.");
+  });
+
   it("sends document update emails from the traveler dossier", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([
       {

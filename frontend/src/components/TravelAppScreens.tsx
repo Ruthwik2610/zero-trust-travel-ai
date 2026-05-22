@@ -1183,6 +1183,29 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
     }
   }
 
+  async function sendFinalItineraryEmail() {
+    if (!request) return;
+    if (request.status !== "finalized" || !request.finalApproved) {
+      setNotification("Final itinerary email requires approval and finalization.");
+      return;
+    }
+    setSendingNotification(true);
+    setNotification("Sending final itinerary email...");
+    try {
+      const result = await sendCorporateRequestNotification(request.id, {
+        kind: "final_itinerary",
+        to: [request.travellerEmail || "traveler@example.com"],
+        note: "Final itinerary after agent review and approval. This is not a booking confirmation.",
+        attach_itinerary: true
+      });
+      setNotification(result.safe_message);
+    } catch {
+      setNotification("Final itinerary email could not be sent. Continue with manual follow-up.");
+    } finally {
+      setSendingNotification(false);
+    }
+  }
+
   return (
     <AppShell active="requests">
       <section className="page-heading">
@@ -1211,6 +1234,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
           <h2>Policy & Budget</h2>
           <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy and budget posture."}</pre>
           <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
+          <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><FileSpreadsheet size={16} /> Send Final Itinerary</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
       </section>
