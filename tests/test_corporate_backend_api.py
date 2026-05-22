@@ -336,6 +336,27 @@ def test_finalize_succeeds_when_agent_reviewed_and_approval_received(tmp_path, m
     assert finalized.json()["approval_status"] == "Received"
 
 
+def test_final_itinerary_export_is_blocked_until_request_is_finalized(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    created = client.post("/api/corporate/requests", json=_corporate_payload(), headers=_headers())
+    request_id = created.json()["id"]
+
+    unplanned_export = client.get(
+        f"/api/corporate/requests/{request_id}/export.xlsx",
+        headers=_headers(purpose="download finalized corporate itinerary excel"),
+    )
+    assert unplanned_export.status_code == 400
+    assert unplanned_export.json()["detail"] == "Final itinerary is not ready"
+
+    client.post(f"/api/corporate/requests/{request_id}/plan", headers=_headers())
+    planned_export = client.get(
+        f"/api/corporate/requests/{request_id}/export.xlsx",
+        headers=_headers(purpose="download finalized corporate itinerary excel"),
+    )
+    assert planned_export.status_code == 400
+    assert planned_export.json()["detail"] == "Final itinerary is not ready"
+
+
 def test_generate_plan_for_hyderabad_to_johannesburg_checks_documents_budget_and_policy(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     imported = client.post(

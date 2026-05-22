@@ -102,6 +102,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Limited travel agents still see core operations routes without admin or policy affordances.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Final Itinerary Export Gate Checkpoint
+
+- Final itinerary XLSX export is now blocked until the request is actually `Finalized` and has a generated plan.
+- Non-finalized exports return the same safe operational message used by finalization gating: `Final itinerary is not ready`.
+- Verified after this slice: backend pytest.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
