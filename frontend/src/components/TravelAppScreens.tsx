@@ -1279,6 +1279,21 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
           <button className="primary-button" type="button" onClick={() => void generatePlan()} disabled={generatingPlan || !request}><Sparkles size={16} /> Generate Plan</button>
         </article>
         <article className="ops-card detail-card">
+          <h2>Detected Parameters</h2>
+          <dl className="detail-list">
+            <div><dt>Route</dt><dd>{request ? `${request.origin} → ${request.destination}` : "No route loaded"}</dd></div>
+            <div><dt>Purpose</dt><dd>{request?.purpose || "Not captured"}</dd></div>
+            <div><dt>Preferences</dt><dd>{request?.preferences || "No preferences captured"}</dd></div>
+            <div><dt>Budget</dt><dd>{request ? formatMoney(request.budgetAmount, request.budgetCurrency) : "Budget pending"}</dd></div>
+          </dl>
+        </article>
+        <article className="ops-card detail-card">
+          <h2>Approval Tracking</h2>
+          <p>Approval status: {request?.approvalStatus || "Not Required"}</p>
+          <p>{request?.finalApproved ? "Approval received" : "Awaiting final approval"}</p>
+          <p>{request?.status === "finalized" ? "Final itinerary complete" : "Agent review required before finalization."}</p>
+        </article>
+        <article className="ops-card detail-card">
           <h2>Communication Thread</h2>
           <p>{request?.originalRequest || "No live request conversation loaded yet."}</p>
           <textarea aria-label="Internal note" defaultValue={request?.customerMessageDraft || ""} />

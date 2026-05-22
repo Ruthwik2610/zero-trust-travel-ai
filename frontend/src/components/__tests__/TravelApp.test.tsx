@@ -637,6 +637,20 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.queryByText(/RESEND_API_KEY/)).toBeNull();
   });
 
+  it("shows detected parameters and approval tracking in the request workspace", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest]);
+
+    render(<RequestWorkspaceScreen requestId="TR-2026-9001" />);
+
+    expect(await screen.findByRole("heading", { name: "Detected Parameters" })).toBeTruthy();
+    expect(screen.getAllByText("Hyderabad → Johannesburg").length).toBeGreaterThan(0);
+    expect(screen.getByText("Client meetings")).toBeTruthy();
+    expect(screen.getByText("Aisle seat, hotel close to office")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Approval Tracking" })).toBeTruthy();
+    expect(screen.getByText("Required")).toBeTruthy();
+    expect(screen.getByText("Awaiting final approval")).toBeTruthy();
+  });
+
   it("generates plans from the request workspace", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest]);
     vi.mocked(generateCorporateTravelPlan).mockResolvedValue(generatedRequest);

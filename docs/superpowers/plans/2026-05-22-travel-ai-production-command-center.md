@@ -231,6 +231,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Blocked itinerary-builder finalization uses safe operational copy and does not display raw provider or credential errors.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Request Workspace Parameters Checkpoint
+
+- Request workspace now shows detected request parameters for route, purpose, preferences, and budget.
+- Request workspace now shows approval tracking with approval status, final approval readiness, and agent-review posture.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
