@@ -126,6 +126,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - CSV export is client-side and does not expose tokens or backend internals.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Policy Review Action Checkpoint
+
+- Policy review dashboard now wires approve and request-changes actions to live API clients.
+- Both actions show safe status messages and update local revision state.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

@@ -53,6 +53,8 @@ import {
   listPolicyActivity,
   listPolicyVersions,
   listTravelers,
+  approvePolicyRevision,
+  requestPolicyRevisionChanges,
   sendCorporateRequestNotification,
   storeAuthSession,
   updateCorporateRequest,
@@ -1362,19 +1364,52 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
 
 export function PolicyReviewScreen({ policyId }: { policyId: string }) {
   const [versions, setVersions] = useState<PolicyRevision[]>([]);
+  const [statusMessage, setStatusMessage] = useState("");
 
   useEffect(() => {
     listPolicyVersions(policyId).then(setVersions).catch(() => setVersions([]));
   }, [policyId]);
 
   const revision = versions[0] || null;
+
+  async function approveRevision() {
+    if (!revision) return;
+    try {
+      await approvePolicyRevision(policyId, revision.id, "Approved from review dashboard.");
+      setVersions((current) => current.map((item) => item.id === revision.id ? { ...item, status: "Approved" } : item));
+      setStatusMessage("Policy revision approved.");
+    } catch {
+      setStatusMessage("Policy revision could not be approved. Continue with manual review.");
+    }
+  }
+
+  async function requestChanges() {
+    if (!revision) return;
+    try {
+      await requestPolicyRevisionChanges(policyId, revision.id, "Changes requested from review dashboard.");
+      setVersions((current) => current.map((item) => item.id === revision.id ? { ...item, status: "Changes Requested" } : item));
+      setStatusMessage("Policy revision changes requested.");
+    } catch {
+      setStatusMessage("Policy revision changes could not be requested. Continue with manual review.");
+    }
+  }
+
   return (
     <AppShell active="policy">
       <section className="page-heading">
         <div><h1>Policy Review Dashboard</h1><p>Compare proposed rules, review impact, and approve or request changes.</p></div>
       </section>
       <section className="workspace-grid">
-        <article className="ops-card detail-card"><h2>Revision Lifecycle</h2><StatusPill value={revision?.status || "In Review"} /><p>{revision?.summary || "No active revision loaded."}</p></article>
+        <article className="ops-card detail-card">
+          <h2>Revision Lifecycle</h2>
+          <StatusPill value={revision?.status || "In Review"} />
+          <p>{revision?.summary || "No active revision loaded."}</p>
+          <div className="detail-actions">
+            <button className="primary-button" type="button" onClick={() => void approveRevision()} disabled={!revision}><CheckCircle2 size={16} /> Approve Revision</button>
+            <button className="secondary-button" type="button" onClick={() => void requestChanges()} disabled={!revision}><MessageSquare size={16} /> Request Changes</button>
+          </div>
+          {statusMessage ? <p role="status">{statusMessage}</p> : null}
+        </article>
         <article className="ops-card detail-card"><h2>Proposed Rules</h2>{revision?.proposed_rules.map((rule) => <p key={rule.label}><strong>{rule.label}</strong> {rule.value}</p>) || <p>No proposed rules</p>}</article>
         <article className="ops-card detail-card"><h2>AI Impact Analysis</h2><p>{revision?.impact_analysis || "Impact analysis pending."}</p></article>
       </section>

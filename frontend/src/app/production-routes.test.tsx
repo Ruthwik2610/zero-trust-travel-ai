@@ -9,7 +9,7 @@ import PolicyPage from "./policy/page";
 import PolicyDetailPage from "./policy/[id]/page";
 import PolicyReviewPage from "./policy/[id]/review/page";
 import PolicyActivityPage from "./policy/activity/page";
-import { listPolicyActivity } from "@/lib/api";
+import { approvePolicyRevision, listPolicyActivity, listPolicyVersions, requestPolicyRevisionChanges } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getStoredAuthContext: vi.fn(() => ({
@@ -37,7 +37,9 @@ vi.mock("@/lib/api", () => ({
   listPolicies: vi.fn(() => Promise.resolve([])),
   getPolicy: vi.fn(() => Promise.resolve(null)),
   listPolicyVersions: vi.fn(() => Promise.resolve([])),
-  listPolicyActivity: vi.fn(() => Promise.resolve([]))
+  listPolicyActivity: vi.fn(() => Promise.resolve([])),
+  approvePolicyRevision: vi.fn(() => Promise.resolve({ id: "policy_global_travel_2024" })),
+  requestPolicyRevisionChanges: vi.fn(() => Promise.resolve({ id: "policy_global_travel_2024" }))
 }));
 
 describe("production command center routes", () => {
@@ -87,5 +89,59 @@ describe("production command center routes", () => {
       expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
     });
     expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
+  });
+
+  it("approves policy revisions from the review dashboard", async () => {
+    vi.mocked(listPolicyVersions).mockResolvedValue([
+      {
+        id: "policy_rev_global_v25",
+        version: "v25",
+        status: "In Review",
+        summary: "Raised hotel caps for tier one cities.",
+        proposed_rules: [{ label: "Hotel Cap", value: "USD 325", status: "Changed" }],
+        impact_analysis: "More requests pass without exception.",
+        reviewer_comments: [],
+        created_by: "policy.manager@unipro.com",
+        created_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:00.000Z"
+      }
+    ]);
+
+    render(await PolicyReviewPage({ params: Promise.resolve({ id: "policy_global_travel_2024" }) }));
+
+    expect(await screen.findByText("Raised hotel caps for tier one cities.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve Revision" }));
+
+    await waitFor(() => {
+      expect(approvePolicyRevision).toHaveBeenCalledWith("policy_global_travel_2024", "policy_rev_global_v25", "Approved from review dashboard.");
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Policy revision approved.");
+  });
+
+  it("requests policy revision changes from the review dashboard", async () => {
+    vi.mocked(listPolicyVersions).mockResolvedValue([
+      {
+        id: "policy_rev_global_v26",
+        version: "v26",
+        status: "In Review",
+        summary: "Added stricter premium cabin approval.",
+        proposed_rules: [{ label: "Premium Cabin", value: "Manager approval required", status: "Changed" }],
+        impact_analysis: "More premium trips require review.",
+        reviewer_comments: [],
+        created_by: "policy.manager@unipro.com",
+        created_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:00.000Z"
+      }
+    ]);
+
+    render(await PolicyReviewPage({ params: Promise.resolve({ id: "policy_global_travel_2024" }) }));
+
+    expect(await screen.findByText("Added stricter premium cabin approval.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Request Changes" }));
+
+    await waitFor(() => {
+      expect(requestPolicyRevisionChanges).toHaveBeenCalledWith("policy_global_travel_2024", "policy_rev_global_v26", "Changes requested from review dashboard.");
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Policy revision changes requested.");
   });
 });
