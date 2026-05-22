@@ -1297,6 +1297,7 @@ export function TravelerRosterScreen() {
   const [travelers, setTravelers] = useState<TravelerProfile[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [documentIssuesOnly, setDocumentIssuesOnly] = useState(false);
+  const [vipOnly, setVipOnly] = useState(false);
 
   useEffect(() => {
     listTravelers().then(setTravelers).catch(() => setTravelers([]));
@@ -1307,6 +1308,7 @@ export function TravelerRosterScreen() {
     return travelers.filter((traveler) => {
       const hasDocumentIssue = traveler.status !== "Compliant" || traveler.documents.some((document) => document.status !== "Ready");
       if (documentIssuesOnly && !hasDocumentIssue) return false;
+      if (vipOnly && !traveler.vip_level) return false;
       if (!query) return true;
       const programs = traveler.loyalty_programs.map((program) => program.provider).join(" ");
       return [
@@ -1317,7 +1319,7 @@ export function TravelerRosterScreen() {
         programs
       ].join(" ").toLowerCase().includes(query);
     });
-  }, [documentIssuesOnly, searchTerm, travelers]);
+  }, [documentIssuesOnly, searchTerm, travelers, vipOnly]);
 
   return (
     <AppShell active="travelers">
@@ -1336,6 +1338,10 @@ export function TravelerRosterScreen() {
         <label className="topbar-control">
           <input aria-label="Document issues only" checked={documentIssuesOnly} onChange={(event) => setDocumentIssuesOnly(event.target.checked)} type="checkbox" />
           <span>Document issues only</span>
+        </label>
+        <label className="topbar-control">
+          <input aria-label="VIP travelers only" checked={vipOnly} onChange={(event) => setVipOnly(event.target.checked)} type="checkbox" />
+          <span>VIP travelers only</span>
         </label>
         <div className="request-table">
           <div className="request-table-head"><span>Traveler</span><span>Company</span><span>Status</span><span>Programs</span></div>

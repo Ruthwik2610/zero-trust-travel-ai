@@ -631,6 +631,34 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.queryByText("Ravi Menon")).toBeNull();
   });
 
+  it("filters the traveler roster to VIP travelers", async () => {
+    vi.mocked(listTravelers).mockResolvedValue([
+      {
+        ...documentUpdateTraveler,
+        vip_level: "VIP Platinum"
+      },
+      {
+        ...documentUpdateTraveler,
+        id: "traveler_ravi",
+        name: "Ravi Menon",
+        email: "ravi.menon@acme.com",
+        company: "Acme Infrastructure",
+        vip_level: null,
+        status: "Compliant",
+        documents: [{ document_type: "passport", label: "Passport", status: "Ready", redacted_value: "On file" }]
+      }
+    ]);
+
+    render(<TravelerRosterScreen />);
+
+    expect(await screen.findByText("Anika Shah")).toBeTruthy();
+    expect(screen.getByText("Ravi Menon")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("VIP travelers only"));
+
+    expect(screen.getByText("Anika Shah")).toBeTruthy();
+    expect(screen.queryByText("Ravi Menon")).toBeNull();
+  });
+
   it("renders admin metrics and uploads Excel files to the backend route", async () => {
     window.localStorage.setItem("travel_ai_selected_role", "admin");
     render(<AdminDashboard />);
