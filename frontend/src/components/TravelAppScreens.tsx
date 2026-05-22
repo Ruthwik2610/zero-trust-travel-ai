@@ -1536,6 +1536,17 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
           <h2>{selected?.client_name || "No policy selected"}</h2>
           {(selected?.active_rules || []).map((rule) => <p key={rule.label}><strong>{rule.label}</strong> {rule.value}</p>)}
         </article>
+        <article className="ops-card detail-card">
+          <h2>Upload Context</h2>
+          <p>Company Policy</p>
+          <p>Traveller History</p>
+          <p>Visa Rules</p>
+        </article>
+        <article className="ops-card detail-card">
+          <h2>Extracted Rules</h2>
+          <p>{selected ? `${selected.active_rules.length} active rules extracted` : "No active rules extracted"}</p>
+          <p>{selected ? `Compliance score ${Math.round(selected.compliance_score)}%` : "Compliance score unavailable"}</p>
+        </article>
       </section>
     </AppShell>
   );

@@ -211,6 +211,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - The review dashboard compares current active rule values against proposed revision values and shows each proposed rule status.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Policy Upload Context Checkpoint
+
+- Policy center now shows upload context categories for company policy, traveller history, and visa rules.
+- Policy center also shows extracted-rule readiness using loaded active-rule counts and compliance score.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
