@@ -96,6 +96,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Raw provider/configuration error text is not surfaced in the UI.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Role-Aware Shell Checkpoint
+
+- Command-center shell now hides policy/admin navigation unless the stored auth context includes the relevant scopes.
+- Limited travel agents still see core operations routes without admin or policy affordances.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

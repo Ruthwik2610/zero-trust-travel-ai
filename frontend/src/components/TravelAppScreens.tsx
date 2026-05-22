@@ -369,6 +369,8 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
   const [storedEmail, setStoredEmail] = useState(DEFAULT_EMAIL);
   const displayEmail = auth?.email || storedEmail;
   const adminAllowed = isAdminContext(auth, role);
+  const canReadPolicy = Boolean(auth?.scopes.some((scope) => scope === "policy:read" || scope === "policy:write" || scope === "admin:summary"));
+  const canReadAdmin = Boolean(auth?.scopes.includes("admin:summary"));
   const roleMeta = ROLE_ACCOUNTS[role];
 
   useEffect(() => {
@@ -385,8 +387,8 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
           <Link className={active === "requests" ? "active" : ""} href="/requests/workspace"><ClipboardCheck size={18} /> Requests</Link>
           <Link className={active === "itineraries" ? "active" : ""} href="/itineraries/builder"><Plane size={18} /> Itineraries</Link>
           <Link className={active === "travelers" ? "active" : ""} href="/travelers"><IdCard size={18} /> Travelers</Link>
-          <Link className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /> Policy</Link>
-          <Link className={active === "admin" ? "active" : ""} href="/admin"><BarChart3 size={18} /> Application Admin</Link>
+          {canReadPolicy ? <Link className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /> Policy</Link> : null}
+          {canReadAdmin ? <Link className={active === "admin" ? "active" : ""} href="/admin"><BarChart3 size={18} /> Application Admin</Link> : null}
         </nav>
         <div className="sidebar-travel-image" aria-hidden="true" />
         <div className="sidebar-footer">
@@ -414,7 +416,7 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
               }}
             >
               <option value="agent">Travel Agent</option>
-              <option value="admin">Application Admin</option>
+              {canReadAdmin ? <option value="admin">Application Admin</option> : null}
             </select>
           </div>
           <ThemeToggle />

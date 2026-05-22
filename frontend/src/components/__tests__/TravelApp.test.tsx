@@ -318,6 +318,26 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.queryByText("56")).toBeNull();
   });
 
+  it("hides policy and admin navigation when the signed-in agent lacks those scopes", async () => {
+    window.localStorage.setItem("travel_ai_auth_context", JSON.stringify({
+      user_id: "usr_limited_agent",
+      email: "limited.agent@unipro.com",
+      role: "travel_manager",
+      department: "travel_ops",
+      scopes: ["travel:plan"],
+      manager_scope: [],
+      token_expires_at: Math.floor(Date.now() / 1000) + 900
+    }));
+
+    render(<TravelerDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Agent Operations Dashboard" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Agent Operations/i })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Requests$/i })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /^Policy$/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Application Admin/i })).toBeNull();
+  });
+
   it("lets an agent create a travel request from the dashboard", async () => {
     render(<TravelerDashboard />);
 
