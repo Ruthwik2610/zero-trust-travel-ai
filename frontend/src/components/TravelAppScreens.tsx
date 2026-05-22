@@ -1543,14 +1543,17 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
 
 export function PolicyReviewScreen({ policyId }: { policyId: string }) {
   const [versions, setVersions] = useState<PolicyRevision[]>([]);
+  const [policy, setPolicy] = useState<PolicyGroup | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [reviewComment, setReviewComment] = useState("");
 
   useEffect(() => {
     listPolicyVersions(policyId).then(setVersions).catch(() => setVersions([]));
+    getPolicy(policyId).then(setPolicy).catch(() => setPolicy(null));
   }, [policyId]);
 
   const revision = versions[0] || null;
+  const activeRuleByLabel = new Map((policy?.active_rules || []).map((rule) => [rule.label, rule]));
 
   async function approveRevision() {
     if (!revision) return;
@@ -1595,6 +1598,20 @@ export function PolicyReviewScreen({ policyId }: { policyId: string }) {
           {statusMessage ? <p role="status">{statusMessage}</p> : null}
         </article>
         <article className="ops-card detail-card"><h2>Proposed Rules</h2>{revision?.proposed_rules.map((rule) => <p key={rule.label}><strong>{rule.label}</strong> {rule.value}</p>) || <p>No proposed rules</p>}</article>
+        <article className="ops-card detail-card">
+          <h2>Version Comparison</h2>
+          {revision?.proposed_rules.length ? revision.proposed_rules.map((rule) => {
+            const activeRule = activeRuleByLabel.get(rule.label);
+            return (
+              <div className="detail-info-card" key={rule.label}>
+                <strong>{rule.label}</strong>
+                <span>Current: {activeRule?.value || "No active rule"}</span>
+                <span>Proposed: {rule.value}</span>
+                <StatusPill value={rule.status} />
+              </div>
+            );
+          }) : <p>No proposed rules to compare.</p>}
+        </article>
         <article className="ops-card detail-card"><h2>Reviewer Comments</h2>{revision?.reviewer_comments.length ? revision.reviewer_comments.map((comment) => <p key={comment}>{comment}</p>) : <p>No reviewer comments yet.</p>}</article>
         <article className="ops-card detail-card"><h2>AI Impact Analysis</h2><p>{revision?.impact_analysis || "Impact analysis pending."}</p></article>
       </section>

@@ -194,4 +194,39 @@ describe("production command center routes", () => {
       );
     });
   });
+
+  it("shows active versus proposed policy rules during revision review", async () => {
+    vi.mocked(getPolicy).mockResolvedValue({
+      id: "policy_global_travel_2024",
+      client_name: "Global Travel Policy 2024",
+      business_unit: "Corporate",
+      status: "Active",
+      active_rules: [{ label: "Hotel Cap", value: "USD 275", status: "Active" }],
+      revisions: [],
+      compliance_score: 94,
+      updated_at: "2026-05-22T00:00:00.000Z"
+    });
+    vi.mocked(listPolicyVersions).mockResolvedValue([
+      {
+        id: "policy_rev_global_v28",
+        version: "v28",
+        status: "In Review",
+        summary: "Raised hotel caps for high-demand cities.",
+        proposed_rules: [{ label: "Hotel Cap", value: "USD 325", status: "Changed" }],
+        impact_analysis: "More city-center stays pass policy.",
+        reviewer_comments: [],
+        created_by: "policy.manager@unipro.com",
+        created_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:00.000Z"
+      }
+    ]);
+
+    render(await PolicyReviewPage({ params: Promise.resolve({ id: "policy_global_travel_2024" }) }));
+
+    expect(await screen.findByRole("heading", { name: "Version Comparison" })).toBeTruthy();
+    expect(screen.getByText("Current: USD 275")).toBeTruthy();
+    expect(screen.getByText("Proposed: USD 325")).toBeTruthy();
+    expect(screen.getByText("Changed")).toBeTruthy();
+    expect(getPolicy).toHaveBeenCalledWith("policy_global_travel_2024");
+  });
 });
