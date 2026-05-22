@@ -1,86 +1,470 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AdminDashboard, LoginScreen, TravelerDashboard, TripPlannerScreen } from "../TravelAppScreens";
+import { AdminDashboard, LoginScreen, TravelerDashboard } from "../TravelAppScreens";
+import {
+  createCorporateRequest,
+  demoLogin,
+  downloadCorporateExcelTemplate,
+  downloadCorporateRequestExcel,
+  finalizeCorporateRequest,
+  generateCorporateTravelPlan,
+  getCorporateAdminSummary,
+  listCorporateRequests,
+  updateCorporateRequest,
+  uploadCorporateRequests
+} from "@/lib/api";
+import type { CorporateAdminSummary, CorporateTravelRequest } from "@/lib/types";
 
-describe("Unipro Travel product screens", () => {
-  it("renders the branded login screen", () => {
+vi.mock("@/lib/api", () => ({
+  createCorporateRequest: vi.fn(),
+  demoLogin: vi.fn(),
+  downloadCorporateExcelTemplate: vi.fn(),
+  downloadCorporateRequestExcel: vi.fn(),
+  finalizeCorporateRequest: vi.fn(),
+  generateCorporateTravelPlan: vi.fn(),
+  getCorporateAdminSummary: vi.fn(),
+  getStoredAuthContext: vi.fn(() => {
+    const raw = window.localStorage.getItem("travel_ai_auth_context");
+    return raw ? JSON.parse(raw) : null;
+  }),
+  listCorporateRequests: vi.fn(),
+  storeAuthSession: vi.fn((session) => {
+    window.localStorage.setItem("travel_ai_api_token", session.access_token);
+    window.localStorage.setItem("travel_ai_auth_context", JSON.stringify(session.user));
+    window.localStorage.setItem("travel_ai_user_email", session.user.email);
+  }),
+  updateCorporateRequest: vi.fn(),
+  uploadCorporateRequests: vi.fn()
+}));
+
+const sampleRequest: CorporateTravelRequest = {
+  id: "TR-2026-9001",
+  travellerName: "Vikram Rao",
+  travellerEmail: "vikram.rao@acme.com",
+  company: "Acme Infrastructure",
+  origin: "Hyderabad",
+  destination: "Johannesburg",
+  departDate: "2026-06-10",
+  returnDate: "2026-06-17",
+  purpose: "Client meetings",
+  preferences: "Aisle seat, hotel close to office",
+  budgetAmount: 150000,
+  budgetCurrency: "INR",
+  specialRequests: "Vegetarian meals",
+  status: "pending_approval",
+  visaStatus: "clear",
+  budgetStatus: "attention",
+  approvalStatus: "Required",
+  lastUpdated: "2026-05-19T08:45:00.000Z",
+  originalRequest: "Plan Hyderabad to Johannesburg for client meetings.",
+  aiSummary: "AI summary prepared for Johannesburg.",
+  readinessCheck: "Visa valid. Passport profile present.",
+  budgetPolicyCheck: "Plan is close to the INR 1.5 lakh target.",
+  recommendedPlans: [
+    {
+      id: "plan-a",
+      name: "Policy Fit",
+      flightSummary: "Qatar one-stop flight",
+      hotelSummary: "Sandton hotel near office",
+      totalAmount: 143800,
+      currency: "INR",
+      policyFit: "Inside budget",
+      tradeoffs: "Best balance of cost and timing.",
+      selected: true
+    },
+    {
+      id: "plan-b",
+      name: "Lowest Cost",
+      flightSummary: "Longer one-stop flight",
+      hotelSummary: "Rosebank value hotel",
+      totalAmount: 126900,
+      currency: "INR",
+      policyFit: "Inside policy",
+      tradeoffs: "Cheaper but farther from office."
+    },
+    {
+      id: "plan-c",
+      name: "Fastest Comfortable",
+      flightSummary: "Fastest one-stop route",
+      hotelSummary: "Premium Sandton hotel",
+      totalAmount: 168500,
+      currency: "INR",
+      policyFit: "Approval required",
+      tradeoffs: "Faster but over budget."
+    }
+  ],
+  missingInformation: "Confirm airport pickup.",
+  customerMessageDraft: "Hi Vikram, I prepared three options.",
+  finalItineraryDraft: "Draft itinerary for Vikram. This is not a booking confirmation.",
+  finalApproved: false
+};
+
+const generatedRequest: CorporateTravelRequest = {
+  ...sampleRequest,
+  aiSummary: "Generated complete travel plan for Vikram.",
+  readinessCheck: "Visa, passport, meal, and pickup checks are captured.",
+  budgetPolicyCheck: "Recommended plan stays within INR 1.5 lakh.",
+  missingInformation: "Confirm mobile number for pickup.",
+  customerMessageDraft: "Hi Vikram, the recommended plan is ready for review.",
+  finalItineraryDraft: "Final itinerary draft after agent generation.",
+  status: "planning"
+};
+
+const missingInfoRequest: CorporateTravelRequest = {
+  ...sampleRequest,
+  id: "TR-2026-9002",
+  travellerName: "Anika Shah",
+  travellerEmail: "anika.shah@northstar.com",
+  company: "Northstar Energy",
+  origin: "Delhi",
+  destination: "Singapore",
+  departDate: "2026-06-24",
+  returnDate: "2026-06-28",
+  status: "missing_info",
+  visaStatus: "pending",
+  budgetStatus: "clear",
+  approvalStatus: "Not Required",
+  missingInformation: "Passport expiry and mobile number required.",
+  lastUpdated: "2026-05-19T09:15:00.000Z"
+};
+
+const finalizedRequest: CorporateTravelRequest = {
+  ...sampleRequest,
+  id: "TR-2026-9003",
+  travellerName: "Mira Kapoor",
+  travellerEmail: "mira.kapoor@acme.com",
+  destination: "Berlin",
+  status: "finalized",
+  visaStatus: "clear",
+  budgetStatus: "clear",
+  approvalStatus: "Received",
+  finalApproved: true,
+  lastUpdated: "2026-05-19T10:45:00.000Z"
+};
+
+const adminSummary: CorporateAdminSummary = {
+  totalRequests: 12,
+  newRequests: 3,
+  pendingApprovals: 4,
+  missingInfo: 2,
+  visaIssues: 1,
+  finalizedItineraries: 5,
+  averageHandlingTimeHours: 3.2,
+  commonDestinations: [
+    { destination: "Johannesburg", count: 5 },
+    { destination: "Berlin", count: 3 }
+  ]
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  window.localStorage.clear();
+  vi.mocked(demoLogin).mockResolvedValue({
+    access_token: "demo-token",
+    token_type: "bearer",
+    expires_at: Math.floor(Date.now() / 1000) + 900,
+    user: {
+      user_id: "usr_agent",
+      email: "demo.agent@unipro.com",
+      role: "travel_manager",
+      department: "travel_ops",
+      scopes: ["admin:summary", "travel:plan"],
+      manager_scope: [],
+      token_expires_at: Math.floor(Date.now() / 1000) + 900
+    }
+  });
+  vi.mocked(listCorporateRequests).mockResolvedValue([sampleRequest]);
+  vi.mocked(createCorporateRequest).mockImplementation(async (payload) => ({
+    ...sampleRequest,
+    ...payload,
+    id: "TR-2026-9010",
+    originalRequest: `${payload.travellerName} needs ${payload.origin} to ${payload.destination}.`
+  }));
+  vi.mocked(generateCorporateTravelPlan).mockResolvedValue(generatedRequest);
+  vi.mocked(updateCorporateRequest).mockResolvedValue(generatedRequest);
+  vi.mocked(finalizeCorporateRequest).mockImplementation(async (_id, payload) => ({
+    ...generatedRequest,
+    ...payload,
+    finalApproved: true,
+    status: "finalized"
+  }));
+  vi.mocked(getCorporateAdminSummary).mockResolvedValue(adminSummary);
+  vi.mocked(downloadCorporateExcelTemplate).mockResolvedValue(new Blob(["template"]));
+  vi.mocked(downloadCorporateRequestExcel).mockResolvedValue(new Blob(["itinerary"]));
+  vi.mocked(uploadCorporateRequests).mockResolvedValue({
+    totalRows: 4,
+    createdRequests: 3,
+    skippedRows: 1,
+    requests: [{ ...sampleRequest, id: "TR-2026-9020" }]
+  });
+});
+
+describe("AI Corporate Travel Planning Assistant MVP", () => {
+  it("renders demo-friendly login with only agent and admin roles", async () => {
     render(<LoginScreen />);
 
-    expect(screen.getByText("Smarter Travel. Seamless Experiences.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/dashboard");
-    expect(screen.getByRole("button", { name: /Switch to/i })).toBeInTheDocument();
-  });
+    expect(screen.getByText("Unipro Travel Operations")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Travel Agent/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Research Intake/i })).toBeNull();
+    expect(screen.queryByText("Research")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Application Admin/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
-  it("keeps login hero and form on the same integrated auth surface", () => {
-    const css = readFileSync(join(process.cwd(), "src/app/globals.css"), "utf8");
-
-    expect(css).toContain(".login-screen::before");
-    expect(css).toContain("--auth-panel");
-    expect(css).toMatch(/\.login-hero[\s\S]*background:\s*var\(--auth-panel\)/);
-    expect(css).toMatch(/\.login-card[\s\S]*background:\s*var\(--auth-panel-strong\)/);
-  });
-
-  it("renders the traveler dashboard widgets", () => {
-    render(<TravelerDashboard />);
-
-    expect(screen.getByText("Hello, Vikram!")).toBeInTheDocument();
-    expect(screen.getByText("Visa Rule Check")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Plan New Trip/i })).toHaveAttribute("href", "/planner");
-  });
-
-  it("renders the booking chat and admin dashboard", () => {
-    render(<TripPlannerScreen />);
-    expect(screen.getByText("Trip Planner")).toBeInTheDocument();
-    expect(screen.getByText("Review Itinerary")).toBeInTheDocument();
-
-    render(<AdminDashboard />);
-    expect(screen.getByText("Admin User")).toBeInTheDocument();
-    expect(screen.getByText("Users & Travelers Overview")).toBeInTheDocument();
-  });
-
-  it("does not render mockup screen labels in production views", () => {
-    const mockupLabels = /login screen|traveler dashboard|booking chat|admin dashboard/i;
-
-    render(<LoginScreen />);
-    expect(screen.queryByText(mockupLabels)).not.toBeInTheDocument();
-    cleanup();
-
-    render(<TravelerDashboard />);
-    expect(screen.queryByText(mockupLabels)).not.toBeInTheDocument();
-    cleanup();
-
-    render(<TripPlannerScreen />);
-    expect(screen.queryByText(mockupLabels)).not.toBeInTheDocument();
-    cleanup();
-
-    render(<AdminDashboard />);
-    expect(screen.queryByText(mockupLabels)).not.toBeInTheDocument();
-  });
-
-  it("does not ship demo credentials or dead anchor links", () => {
-    render(<LoginScreen />);
-    expect(screen.queryByDisplayValue("vikram.r@unipro.com")).not.toBeInTheDocument();
-    expect(screen.queryByDisplayValue("enterprise")).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/email address/i)).toHaveAttribute("placeholder", "name@company.com");
-    cleanup();
-
-    [<LoginScreen key="login" />, <TravelerDashboard key="dashboard" />, <TripPlannerScreen key="planner" />, <AdminDashboard key="admin" />].forEach((view) => {
-      render(view);
-      screen.queryAllByRole("link").forEach((link) => {
-        expect(link).not.toHaveAttribute("href", "#");
-      });
-      cleanup();
+    await waitFor(() => {
+      expect(demoLogin).toHaveBeenCalledWith("admin.user@unipro.com");
+      expect(window.localStorage.getItem("travel_ai_selected_role")).toBe("admin");
+      expect(window.location.pathname).toBe("/admin");
     });
   });
 
-  it("keeps the visible itinerary route consistent", () => {
-    render(<TripPlannerScreen />);
+  it("renders the agent dashboard request list with required operational columns", async () => {
+    render(<TravelerDashboard />);
 
-    expect(screen.getByLabelText("Flight route HYD to JNB and JNB to HYD")).toBeInTheDocument();
-    expect(screen.getByLabelText("Hyderabad to Johannesburg")).toBeInTheDocument();
-    expect(screen.getByLabelText("Johannesburg to Hyderabad")).toBeInTheDocument();
+    expect(await screen.findByText("Agent Operations Dashboard")).toBeTruthy();
+    expect(screen.getByText("Request Queue")).toBeTruthy();
+    expect(screen.getAllByText("Request Details").length).toBeGreaterThan(1);
+    expect(screen.getByRole("button", { name: /AI Planning Assistant/i })).toBeTruthy();
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Vikram Rao").length).toBeGreaterThan(1);
+    expect(screen.getByText("Traveller")).toBeTruthy();
+    expect(screen.getByText("Company")).toBeTruthy();
+    expect(screen.getByText("Destination")).toBeTruthy();
+    expect(screen.getByText("Travel dates")).toBeTruthy();
+    expect(screen.getByText("Visa")).toBeTruthy();
+    expect(screen.getByText("Budget")).toBeTruthy();
+    expect(screen.getByText("Approval")).toBeTruthy();
+    expect(screen.getAllByText("Hyderabad → Johannesburg").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
+    expect(listCorporateRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults the dashboard to a priority board with workflow stage columns", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([missingInfoRequest, generatedRequest, finalizedRequest]);
+
+    render(<TravelerDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Priority Board" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Priority Board" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Waiting For Information/i })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /In Process/i })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Completed/i })).toBeTruthy();
+    expect(screen.getAllByText("Passport expiry and mobile number required.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("High").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Ask for info").length).toBeGreaterThan(0);
+    expect(screen.getByText("Review plan")).toBeTruthy();
+    expect(screen.getAllByText("Completed").length).toBeGreaterThan(0);
+  });
+
+  it("keeps dashboard cards scan-friendly with route, dates, owner, freshness, and priority reasons", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([missingInfoRequest]);
+
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9002")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Anika Shah").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Northstar Energy").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Delhi → Singapore").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Jun 24, 2026 - Jun 28, 2026").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Visa issue").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Missing info").length).toBeGreaterThan(0);
+    expect(screen.getByText("Assigned to travel ops")).toBeTruthy();
+    expect(screen.getByText(/Updated/)).toBeTruthy();
+    expect(screen.queryByText("Final itinerary draft after agent generation.")).toBeNull();
+  });
+
+  it("separates the request workspace into focused tabs", async () => {
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Missing Info" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Plan" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Policy & Budget" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Documents & Visa" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Approval & Finalize" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Activity" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+    expect(screen.getByText("Policy Fit")).toBeTruthy();
+    expect(screen.queryByLabelText("Approval status")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Approval & Finalize" }));
+    expect(screen.getByLabelText("Approval status")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Generate Final Itinerary/i })).toBeTruthy();
+  });
+
+  it("uses only live queue requests without sample filler or fake totals", async () => {
+    render(<TravelerDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Agent Operations Dashboard" })).toBeTruthy();
+    expect(screen.queryByText("Michael Chen")).toBeNull();
+    expect(screen.queryByText("Sarah Johnson")).toBeNull();
+    expect(screen.getByText("Showing 1 to 1 of 1 requests")).toBeTruthy();
+    expect(screen.queryByText("56")).toBeNull();
+  });
+
+  it("lets an agent create a travel request from the dashboard", async () => {
+    render(<TravelerDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Agent Operations Dashboard" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /New Request/i }));
+    fireEvent.change(screen.getByLabelText("Traveller name"), { target: { value: "Anika Shah" } });
+    fireEvent.change(screen.getByLabelText("Traveller email"), { target: { value: "anika.shah@example.com" } });
+    fireEvent.change(screen.getByLabelText("Company"), { target: { value: "Northstar Energy" } });
+    fireEvent.change(screen.getByLabelText("Origin"), { target: { value: "Delhi" } });
+    fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Singapore" } });
+    fireEvent.change(screen.getByLabelText("Depart date"), { target: { value: "2026-06-24" } });
+    fireEvent.change(screen.getByLabelText("Return date"), { target: { value: "2026-06-28" } });
+    fireEvent.change(screen.getByLabelText("Travel purpose"), { target: { value: "Regional leadership meeting" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create Request/i }));
+
+    await waitFor(() => {
+      expect(createCorporateRequest).toHaveBeenCalledWith(expect.objectContaining({
+        travellerName: "Anika Shah",
+        company: "Northstar Energy",
+        destination: "Singapore",
+        budgetAmount: 150000
+      }));
+    });
+    expect((await screen.findAllByText("TR-2026-9010")).length).toBeGreaterThan(0);
+  });
+
+  it("generates the request detail plan and renders editable MVP sections", async () => {
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Request Details")).length).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: /Generate AI Plan/i }));
+
+    expect((await screen.findAllByText("Confirm mobile number for pickup.")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+    expect(screen.getByLabelText("AI Summary")).toBeTruthy();
+    expect(screen.getByLabelText("Customer Message Draft")).toBeTruthy();
+    expect(screen.getByText("Policy Fit")).toBeTruthy();
+    expect(generateCorporateTravelPlan).toHaveBeenCalledWith("TR-2026-9001");
+  });
+
+  it("lets the agent save a note from the request details panel", async () => {
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+    fireEvent.change(await screen.findByLabelText("AI Summary"), { target: { value: "Agent edited plan summary." } });
+    fireEvent.click(await screen.findByRole("button", { name: /Save Edits/i }));
+
+    await waitFor(() => {
+      expect(updateCorporateRequest).toHaveBeenCalledWith("TR-2026-9001", expect.objectContaining({
+        aiSummary: "Agent edited plan summary.",
+        recommendedPlans: expect.arrayContaining([
+          expect.objectContaining({ name: "Policy Fit" })
+        ])
+      }));
+    });
+  });
+
+  it("lets the agent mark approval received, generate final itinerary, and download export", async () => {
+    const objectUrl = "blob:itinerary";
+    const createObjectUrl = vi.fn(() => objectUrl);
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Approval & Finalize" }));
+    fireEvent.change(await screen.findByLabelText("Approval status"), { target: { value: "Received" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Generate Final Itinerary/i }));
+
+    await waitFor(() => {
+      expect(finalizeCorporateRequest).toHaveBeenCalledWith("TR-2026-9001", expect.objectContaining({
+        agent_reviewed: true,
+        approval_status: "Received"
+      }));
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Download Export/i }));
+    await waitFor(() => {
+      expect(downloadCorporateRequestExcel).toHaveBeenCalledWith("TR-2026-9001");
+    });
+    expect(createObjectUrl).toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
+  });
+
+  it("uses contextual planning chat without claiming a booking", async () => {
+    render(<TravelerDashboard />);
+
+    expect((await screen.findAllByText("TR-2026-9001")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /AI Planning Assistant/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Compare policy-compliant options/i }));
+
+    expect((await screen.findAllByText(/Compare policy-compliant options/i)).length).toBeGreaterThan(1);
+    expect(await screen.findByText(/Here are the best policy fit options/i)).toBeTruthy();
+    expect(screen.getAllByText(/AI Planning Assistant/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/booked/i)).toBeNull();
+  });
+
+  it("renders admin metrics and uploads Excel files to the backend route", async () => {
+    window.localStorage.setItem("travel_ai_selected_role", "admin");
+    render(<AdminDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Application Admin" })).toBeTruthy();
+    expect(screen.getByText("Total Requests")).toBeTruthy();
+    expect(await screen.findByText("12")).toBeTruthy();
+    expect(screen.getByText("Pending Approvals")).toBeTruthy();
+    expect(screen.getByText("Average Handling Time")).toBeTruthy();
+    expect(screen.getByText("Johannesburg")).toBeTruthy();
+    expect(screen.queryByText("Client Data Updates")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByText("Upload Company Data")).toBeTruthy();
+
+    const objectUrl = "blob:template";
+    const createObjectUrl = vi.fn(() => objectUrl);
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
+    fireEvent.click(screen.getByRole("button", { name: /Download Template/i }));
+    await waitFor(() => {
+      expect(downloadCorporateExcelTemplate).toHaveBeenCalledTimes(1);
+    });
+    expect(createObjectUrl).toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
+
+    const file = new File(["traveller,company"], "requests.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    });
+    fireEvent.change(screen.getByLabelText(/Select Excel file/i), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: /Upload Requests/i }));
+
+    await waitFor(() => {
+      expect(uploadCorporateRequests).toHaveBeenCalledWith(file);
+    });
+    expect(await screen.findByText(/created from/i)).toBeTruthy();
+    expect(await screen.findByText("TR-2026-9020")).toBeTruthy();
+  });
+
+  it("keeps the admin screen restricted for non-admin selected role", async () => {
+    vi.mocked(demoLogin).mockResolvedValueOnce({
+      access_token: "traveler-token",
+      token_type: "bearer",
+      expires_at: Math.floor(Date.now() / 1000) + 900,
+      user: {
+        user_id: "usr_traveler",
+        email: "traveler@unipro.com",
+        role: "traveler",
+        department: "sales",
+        scopes: ["travel:plan"],
+        manager_scope: [],
+        token_expires_at: Math.floor(Date.now() / 1000) + 900
+      }
+    });
+    render(<AdminDashboard />);
+
+    expect(await screen.findByText("Admin access is restricted.")).toBeTruthy();
+    expect(getCorporateAdminSummary).not.toHaveBeenCalled();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
   });
 });

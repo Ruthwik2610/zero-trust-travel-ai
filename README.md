@@ -46,13 +46,29 @@ Expected backend variables:
 - `TRAVEL_AI_HOST`
 - `TRAVEL_AI_PORT`
 - `TRAVEL_AI_DATABASE_URL`
+- `TRAVEL_AI_DB_PATH`
+- `TRAVEL_AI_TOKEN_SECRET`
+- `DEEPSEEK_API_KEY`
+- `DEEPSEEK_CHAT_MODEL` (defaults to `deepseek-v4-flash`)
+- `DEEPSEEK_API_BASE_URL` (defaults to `https://api.deepseek.com`)
 - `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL`
+- `OPENROUTER_CHAT_MODEL`
 - `OPENROUTER_PROVIDER_ORDER`
-- `AMADEUS_CLIENT_ID`
-- `AMADEUS_CLIENT_SECRET`
-- `AMADEUS_BASE_URL`
+- `DUFFEL_API_TOKEN`
+- `DUFFEL_API_BASE_URL` (defaults to `https://api.duffel.com`)
+- `DUFFEL_VERSION` (defaults to `v2`)
+- `BOOKING_COM_TOKEN`
+- `BOOKING_COM_AFFILIATE_ID`
+- `BOOKING_COM_API_BASE_URL` (defaults to `https://demandapi.booking.com/3.1`)
+- `BOOKING_COM_CITY_IDS` (optional JSON map, for example `{"Johannesburg": 12345}`)
+- `RAPIDAPI_BOOKING_KEY` (supported Booking.com hotel search fallback)
+- `RAPIDAPI_BOOKING_BASE_URL` (defaults to `https://booking-com.p.rapidapi.com/v1/hotels`)
+- `RAPIDAPI_BOOKING_HOST` (defaults to `booking-com.p.rapidapi.com`)
+- `BOOKING_CURRENCY`
+- `BOOKING_LOCALE`
 - `FRONTEND_ORIGIN`
+
+The MVP uses provider APIs for search and planning only. It does not create Duffel orders, Booking.com orders, payments, or final bookings.
 
 Expected frontend variables:
 
