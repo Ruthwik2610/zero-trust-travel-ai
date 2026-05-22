@@ -193,6 +193,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - The decorative sidebar travel picture was removed while keeping the sidebar navigation and brand lockup intact.
 - Verified after this slice: backend pytest, frontend Vitest, Playwright desktop E2E, and `npm run build -- --webpack`.
 
+### 2026-05-22 Policy Reviewer Comment Checkpoint
+
+- Policy review now displays existing reviewer comments for the active revision.
+- Approve and request-changes actions send the reviewer-entered comment, with existing safe default comments when the field is blank.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

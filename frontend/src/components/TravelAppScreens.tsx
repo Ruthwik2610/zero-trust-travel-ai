@@ -1532,6 +1532,7 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
 export function PolicyReviewScreen({ policyId }: { policyId: string }) {
   const [versions, setVersions] = useState<PolicyRevision[]>([]);
   const [statusMessage, setStatusMessage] = useState("");
+  const [reviewComment, setReviewComment] = useState("");
 
   useEffect(() => {
     listPolicyVersions(policyId).then(setVersions).catch(() => setVersions([]));
@@ -1542,7 +1543,7 @@ export function PolicyReviewScreen({ policyId }: { policyId: string }) {
   async function approveRevision() {
     if (!revision) return;
     try {
-      await approvePolicyRevision(policyId, revision.id, "Approved from review dashboard.");
+      await approvePolicyRevision(policyId, revision.id, reviewComment.trim() || "Approved from review dashboard.");
       setVersions((current) => current.map((item) => item.id === revision.id ? { ...item, status: "Approved" } : item));
       setStatusMessage("Policy revision approved.");
     } catch {
@@ -1553,7 +1554,7 @@ export function PolicyReviewScreen({ policyId }: { policyId: string }) {
   async function requestChanges() {
     if (!revision) return;
     try {
-      await requestPolicyRevisionChanges(policyId, revision.id, "Changes requested from review dashboard.");
+      await requestPolicyRevisionChanges(policyId, revision.id, reviewComment.trim() || "Changes requested from review dashboard.");
       setVersions((current) => current.map((item) => item.id === revision.id ? { ...item, status: "Changes Requested" } : item));
       setStatusMessage("Policy revision changes requested.");
     } catch {
@@ -1571,6 +1572,10 @@ export function PolicyReviewScreen({ policyId }: { policyId: string }) {
           <h2>Revision Lifecycle</h2>
           <StatusPill value={revision?.status || "In Review"} />
           <p>{revision?.summary || "No active revision loaded."}</p>
+          <label>
+            <span>Reviewer comment</span>
+            <textarea aria-label="Reviewer comment" value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} />
+          </label>
           <div className="detail-actions">
             <button className="primary-button" type="button" onClick={() => void approveRevision()} disabled={!revision}><CheckCircle2 size={16} /> Approve Revision</button>
             <button className="secondary-button" type="button" onClick={() => void requestChanges()} disabled={!revision}><MessageSquare size={16} /> Request Changes</button>
@@ -1578,6 +1583,7 @@ export function PolicyReviewScreen({ policyId }: { policyId: string }) {
           {statusMessage ? <p role="status">{statusMessage}</p> : null}
         </article>
         <article className="ops-card detail-card"><h2>Proposed Rules</h2>{revision?.proposed_rules.map((rule) => <p key={rule.label}><strong>{rule.label}</strong> {rule.value}</p>) || <p>No proposed rules</p>}</article>
+        <article className="ops-card detail-card"><h2>Reviewer Comments</h2>{revision?.reviewer_comments.length ? revision.reviewer_comments.map((comment) => <p key={comment}>{comment}</p>) : <p>No reviewer comments yet.</p>}</article>
         <article className="ops-card detail-card"><h2>AI Impact Analysis</h2><p>{revision?.impact_analysis || "Impact analysis pending."}</p></article>
       </section>
     </AppShell>

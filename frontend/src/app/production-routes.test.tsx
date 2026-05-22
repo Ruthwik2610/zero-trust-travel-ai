@@ -144,4 +144,35 @@ describe("production command center routes", () => {
     });
     expect(await screen.findByRole("status")).toHaveTextContent("Policy revision changes requested.");
   });
+
+  it("sends reviewer comments with policy revision decisions", async () => {
+    vi.mocked(listPolicyVersions).mockResolvedValue([
+      {
+        id: "policy_rev_global_v27",
+        version: "v27",
+        status: "In Review",
+        summary: "Updated lodging exception wording.",
+        proposed_rules: [{ label: "Lodging Exceptions", value: "Director approval required", status: "Changed" }],
+        impact_analysis: "Exception handling becomes stricter.",
+        reviewer_comments: ["Finance requested clearer exception ownership."],
+        created_by: "policy.manager@unipro.com",
+        created_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:00.000Z"
+      }
+    ]);
+
+    render(await PolicyReviewPage({ params: Promise.resolve({ id: "policy_global_travel_2024" }) }));
+
+    expect(await screen.findByText("Finance requested clearer exception ownership.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Reviewer comment"), { target: { value: "Legal approved the revised exception owner." } });
+    fireEvent.click(screen.getByRole("button", { name: "Approve Revision" }));
+
+    await waitFor(() => {
+      expect(approvePolicyRevision).toHaveBeenCalledWith(
+        "policy_global_travel_2024",
+        "policy_rev_global_v27",
+        "Legal approved the revised exception owner."
+      );
+    });
+  });
 });
