@@ -529,6 +529,30 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("Generated complete travel plan for Vikram.")).toBeTruthy();
   });
 
+  it("finalizes itineraries from the request workspace after approval", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([{ ...generatedRequest, approvalStatus: "Received" }]);
+    vi.mocked(finalizeCorporateRequest).mockResolvedValue({
+      ...finalizedRequest,
+      id: "TR-2026-9001",
+      travellerName: "Vikram Rao"
+    });
+
+    render(<RequestWorkspaceScreen requestId="TR-2026-9001" />);
+
+    expect(await screen.findByText("Vikram Rao")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Finalize Itinerary" }));
+
+    await waitFor(() => {
+      expect(finalizeCorporateRequest).toHaveBeenCalledWith("TR-2026-9001", {
+        agent_reviewed: true,
+        approval_status: "Received",
+        finalApproved: true
+      });
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Final itinerary generated after agent review.");
+    expect(screen.getByText("finalized")).toBeTruthy();
+  });
+
   it("sends final itinerary emails with the itinerary attachment from the request workspace", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([finalizedRequest]);
     vi.mocked(sendCorporateRequestNotification).mockResolvedValue({

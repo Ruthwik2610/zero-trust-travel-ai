@@ -1158,6 +1158,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
   const [notification, setNotification] = useState("");
   const [sendingNotification, setSendingNotification] = useState(false);
   const [generatingPlan, setGeneratingPlan] = useState(false);
+  const [finalizingRequest, setFinalizingRequest] = useState(false);
 
   useEffect(() => {
     listCorporateRequests().then(setRequests).catch(() => setRequests([]));
@@ -1222,6 +1223,25 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
     }
   }
 
+  async function finalizeItinerary() {
+    if (!request) return;
+    setFinalizingRequest(true);
+    setNotification("Finalizing itinerary...");
+    try {
+      const finalized = await finalizeCorporateRequest(request.id, {
+        agent_reviewed: true,
+        approval_status: request.approvalStatus || "Received",
+        finalApproved: true
+      });
+      setRequests((current) => current.map((item) => item.id === finalized.id ? finalized : item));
+      setNotification("Final itinerary generated after agent review.");
+    } catch {
+      setNotification("Final itinerary is not ready. Complete approval and finalization before export.");
+    } finally {
+      setFinalizingRequest(false);
+    }
+  }
+
   return (
     <AppShell active="requests">
       <section className="page-heading">
@@ -1252,6 +1272,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
           {request?.aiSummary ? <p>{request.aiSummary}</p> : null}
           <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy and budget posture."}</pre>
           <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
+          <button className="secondary-button" type="button" onClick={() => void finalizeItinerary()} disabled={finalizingRequest || !request}><CheckCircle2 size={16} /> Finalize Itinerary</button>
           <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><FileSpreadsheet size={16} /> Send Final Itinerary</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
