@@ -351,7 +351,7 @@ function ThemeToggle() {
 function UniproLogo() {
   return (
     <span className="brand-lockup">
-      <img src="/unipro-icon.svg" alt="Unipro" />
+      <img src="/unipro-icon.svg" alt="" aria-hidden="true" />
       <span>
         <strong>Unipro</strong>
         <small>Corporate Travel</small>

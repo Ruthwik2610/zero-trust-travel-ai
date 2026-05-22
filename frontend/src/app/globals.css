@@ -174,7 +174,8 @@ textarea:focus-visible {
   height: 40px;
   padding: 4px;
   border-radius: 6px;
-  background: #ffffff;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, var(--bg));
 }
 
 .brand-lockup > span {
@@ -184,14 +185,14 @@ textarea:focus-visible {
 }
 
 .brand-lockup strong {
-  color: #0f2030;
+  color: var(--text);
   font-size: 1.2rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .brand-lockup small {
-  color: #4e5b66;
+  color: var(--muted);
   font-size: 0.56rem;
   font-weight: 900;
   letter-spacing: 0.16em;
@@ -399,7 +400,8 @@ label {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 192px minmax(0, 1fr);
-  background: #ffffff;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .ops-sidebar {
@@ -407,7 +409,7 @@ label {
   top: 0;
   height: 100vh;
   border-right: 1px solid var(--line);
-  background: #f9fbfb;
+  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
   padding: 18px 10px 0;
   display: flex;
   flex-direction: column;
@@ -467,7 +469,7 @@ label {
   gap: 10px;
   padding: 10px 16px;
   border-top: 1px solid var(--line);
-  background: #ffffff;
+  background: var(--surface);
 }
 
 .sidebar-user div {
@@ -487,7 +489,7 @@ label {
   min-height: 34px;
   border: 0;
   border-top: 1px solid var(--line);
-  background: #ffffff;
+  background: var(--surface);
   color: var(--text);
   text-align: left;
   padding: 0 18px;
@@ -1356,7 +1358,13 @@ label {
   border-radius: var(--radius);
   background: var(--surface-soft);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   line-height: 1.45;
+}
+
+.detail-card pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-panel {
@@ -1394,7 +1402,7 @@ label {
 
 .ai-assistant-card {
   background:
-    linear-gradient(90deg, var(--surface) 0%, var(--surface) 72%, rgba(255,255,255,0.72)),
+    linear-gradient(90deg, var(--surface) 0%, var(--surface) 72%, color-mix(in srgb, var(--surface) 72%, transparent)),
     var(--travel-wallpaper) right bottom / 420px auto no-repeat;
 }
 
@@ -1402,7 +1410,7 @@ label {
   margin: 14px 2px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: rgba(255,255,255,0.82);
+  background: var(--surface-glass);
   padding: 10px;
   display: grid;
   gap: 8px;
@@ -1418,7 +1426,7 @@ label {
   min-height: 34px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--surface);
   color: var(--text);
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) 14px;
@@ -1448,7 +1456,7 @@ label {
   margin-left: 26px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #ffffff;
+  background: var(--surface);
   box-shadow: var(--shadow);
   padding: 12px;
   display: grid;
