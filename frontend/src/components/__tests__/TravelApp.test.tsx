@@ -511,6 +511,41 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("Do not finalize until an agent attaches verified provider options.")).toBeTruthy();
   });
 
+  it("shows a selected-plan budget rail with remaining or over-budget posture", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([
+      {
+        ...generatedRequest,
+        recommendedPlans: generatedRequest.recommendedPlans.map((plan) => ({
+          ...plan,
+          selected: plan.id === "plan-c"
+        }))
+      }
+    ]);
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9001" />);
+
+    expect(await screen.findByRole("heading", { name: "Budget Rail" })).toBeTruthy();
+    expect(screen.getByText("Selected spend")).toBeTruthy();
+    expect(screen.getAllByText("₹168,500").length).toBeGreaterThan(0);
+    expect(screen.getByText("Approved budget")).toBeTruthy();
+    expect(screen.getByText("₹150,000")).toBeTruthy();
+    expect(screen.getByText("Over budget ₹18,500")).toBeTruthy();
+    expect(screen.getByText("112% used")).toBeTruthy();
+  });
+
+  it("breaks the selected itinerary into flight hotel and transfer segments", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([generatedRequest]);
+
+    render(<ItineraryBuilderScreen requestId="TR-2026-9001" />);
+
+    expect(await screen.findByRole("heading", { name: "Flight Segment" })).toBeTruthy();
+    expect(screen.getAllByText("Qatar one-stop flight").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Hotel Segment" })).toBeTruthy();
+    expect(screen.getAllByText("Sandton hotel near office").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Transfer / Requests" })).toBeTruthy();
+    expect(screen.getByText("Vegetarian meals")).toBeTruthy();
+  });
+
   it("selects itinerary options from the itinerary builder", async () => {
     vi.mocked(listCorporateRequests).mockResolvedValue([generatedRequest]);
     vi.mocked(updateCorporateRequest).mockImplementation(async (_id, payload) => ({

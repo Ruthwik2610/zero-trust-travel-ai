@@ -217,6 +217,13 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Policy center also shows extracted-rule readiness using loaded active-rule counts and compliance score.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Itinerary Budget And Segments Checkpoint
+
+- Itinerary builder now uses the selected itinerary option for budget rail calculations instead of assuming the first option.
+- The budget rail shows selected spend, approved budget, remaining or over-budget posture, and percent used.
+- The selected itinerary is broken into flight, hotel, and transfer/request segments for agent review.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

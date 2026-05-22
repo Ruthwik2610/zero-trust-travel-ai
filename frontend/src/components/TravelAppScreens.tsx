@@ -1308,7 +1308,12 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
 
   const request = requests.find((item) => item.id === requestId) || requests[0] || null;
   const plans = request?.recommendedPlans || [];
-  const total = plans[0]?.totalAmount || request?.budgetAmount || 0;
+  const selectedPlan = plans.find((plan) => plan.selected) || plans[0] || null;
+  const total = selectedPlan?.totalAmount || request?.budgetAmount || 0;
+  const budget = request?.budgetAmount || 0;
+  const budgetDelta = budget - total;
+  const budgetPercent = budget > 0 ? Math.round((total / budget) * 100) : 0;
+  const budgetPosture = budgetDelta >= 0 ? "Remaining" : "Over budget";
   const manualSourcingRequired = plans.some((plan) => {
     const text = `${plan.flightSummary} ${plan.hotelSummary} ${plan.policyFit}`.toLowerCase();
     return text.includes("manual sourcing") || text.includes("manual review");
@@ -1338,10 +1343,28 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
       <section className="workspace-grid">
         <article className="ops-card detail-card">
           <span className="eyebrow">Total Estimated Budget</span>
+          <h2>Budget Rail</h2>
+          <dl className="detail-list">
+            <div><dt>Selected spend</dt><dd>{formatMoney(total, selectedPlan?.currency || request?.budgetCurrency || "USD")}</dd></div>
+            <div><dt>Approved budget</dt><dd>{formatMoney(budget, request?.budgetCurrency || selectedPlan?.currency || "USD")}</dd></div>
+          </dl>
           <h2>{formatMoney(total, request?.budgetCurrency || "USD")}</h2>
-          <div className="progress-track"><span style={{ width: "72%" }} /></div>
+          <div className="progress-track"><span style={{ width: `${Math.min(100, budgetPercent)}%` }} /></div>
+          <p>{budgetPosture} {formatMoney(Math.abs(budgetDelta), request?.budgetCurrency || selectedPlan?.currency || "USD")}</p>
+          <p>{budgetPercent}% used</p>
           <p>{request?.budgetPolicyCheck || "Budget check pending."}</p>
         </article>
+        {selectedPlan ? (
+          <article className="ops-card detail-card">
+            <div className="card-title-row"><h2>{selectedPlan.name}</h2><StatusPill value={selectedPlan.policyFit || "Needs Review"} /></div>
+            <h2>Flight Segment</h2>
+            <p>{selectedPlan.flightSummary}</p>
+            <h2>Hotel Segment</h2>
+            <p>{selectedPlan.hotelSummary}</p>
+            <h2>Transfer / Requests</h2>
+            <p>{request?.specialRequests || request?.missingInformation || "No transfer or special requests recorded."}</p>
+          </article>
+        ) : null}
         {manualSourcingRequired ? (
           <article className="ops-card detail-card">
             <div className="card-title-row"><h2><AlertTriangle size={18} /> Manual Sourcing Required</h2><StatusPill value="Needs Review" /></div>
