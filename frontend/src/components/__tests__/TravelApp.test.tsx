@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, RequestWorkspaceScreen, TravelerDashboard } from "../TravelAppScreens";
+import { AdminDashboard, ItineraryBuilderScreen, LoginScreen, RequestWorkspaceScreen, TravelerDashboard, TravelerDossierScreen } from "../TravelAppScreens";
 import {
   createCorporateRequest,
   demoLogin,
@@ -9,13 +9,14 @@ import {
   downloadCorporateRequestExcel,
   finalizeCorporateRequest,
   generateCorporateTravelPlan,
+  getTraveler,
   getCorporateAdminSummary,
   listCorporateRequests,
   sendCorporateRequestNotification,
   updateCorporateRequest,
   uploadCorporateRequests
 } from "@/lib/api";
-import type { CorporateAdminSummary, CorporateTravelRequest } from "@/lib/types";
+import type { CorporateAdminSummary, CorporateTravelRequest, TravelerProfile } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
   createCorporateRequest: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("@/lib/api", () => ({
   downloadCorporateRequestExcel: vi.fn(),
   finalizeCorporateRequest: vi.fn(),
   generateCorporateTravelPlan: vi.fn(),
+  getTraveler: vi.fn(),
   getCorporateAdminSummary: vi.fn(),
   getStoredAuthContext: vi.fn(() => {
     const raw = window.localStorage.getItem("travel_ai_auth_context");
@@ -159,6 +161,26 @@ const adminSummary: CorporateAdminSummary = {
   ]
 };
 
+const documentUpdateTraveler: TravelerProfile = {
+  id: "traveler_anika",
+  name: "Anika Shah",
+  email: "anika.shah@northstar.com",
+  company: "Northstar Energy",
+  department: "Finance",
+  vip_level: null,
+  status: "Missing Passport",
+  location: "Delhi",
+  seat_preference: "Window",
+  meal_preference: "Vegetarian",
+  hotel_preference: "Near client office",
+  policy_notes: ["Passport must be collected before final itinerary."],
+  loyalty_programs: [{ provider: "United MileagePlus", tier: "Gold", account_ref: "On file" }],
+  documents: [{ document_type: "passport", label: "Passport", status: "Missing", redacted_value: null }],
+  recent_trips: ["Delhi to Singapore"],
+  created_at: "2026-05-22T00:00:00.000Z",
+  updated_at: "2026-05-22T00:00:00.000Z"
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
@@ -184,6 +206,7 @@ beforeEach(() => {
     originalRequest: `${payload.travellerName} needs ${payload.origin} to ${payload.destination}.`
   }));
   vi.mocked(generateCorporateTravelPlan).mockResolvedValue(generatedRequest);
+  vi.mocked(getTraveler).mockResolvedValue(documentUpdateTraveler);
   vi.mocked(updateCorporateRequest).mockResolvedValue(generatedRequest);
   vi.mocked(finalizeCorporateRequest).mockImplementation(async (_id, payload) => ({
     ...generatedRequest,
@@ -485,6 +508,45 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent("Approval email could not be sent. Continue with manual follow-up.");
     expect(screen.queryByText(/RESEND_API_KEY/)).toBeNull();
+  });
+
+  it("sends document update emails from the traveler dossier", async () => {
+    vi.mocked(listCorporateRequests).mockResolvedValue([
+      {
+        ...sampleRequest,
+        id: "TR-2026-9200",
+        travellerName: "Anika Shah",
+        travellerEmail: "anika.shah@northstar.com",
+        company: "Northstar Energy"
+      }
+    ]);
+    vi.mocked(sendCorporateRequestNotification).mockResolvedValue({
+      id: "email_event_document_update",
+      request_id: "TR-2026-9200",
+      kind: "document_update",
+      provider: "resend",
+      status: "sent",
+      to: ["anika.shah@northstar.com"],
+      subject: "Document update needed",
+      provider_message_id: "email_document_123",
+      safe_message: "Document update email accepted by Resend.",
+      created_at: "2026-05-22T00:00:00.000Z"
+    });
+
+    render(<TravelerDossierScreen travelerId="traveler_anika" />);
+
+    expect(await screen.findByText("Anika Shah • Northstar Energy")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send Document Update" }));
+
+    await waitFor(() => {
+      expect(sendCorporateRequestNotification).toHaveBeenCalledWith("TR-2026-9200", {
+        kind: "document_update",
+        to: ["anika.shah@northstar.com"],
+        note: "Please update missing or expiring travel documents before itinerary finalization.",
+        attach_itinerary: false
+      });
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Document update email accepted by Resend.");
   });
 
   it("renders admin metrics and uploads Excel files to the backend route", async () => {

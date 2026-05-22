@@ -1303,10 +1303,42 @@ export function TravelerRosterScreen() {
 
 export function TravelerDossierScreen({ travelerId }: { travelerId: string }) {
   const [traveler, setTraveler] = useState<TravelerProfile | null>(null);
+  const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
+  const [notification, setNotification] = useState("");
+  const [sendingNotification, setSendingNotification] = useState(false);
 
   useEffect(() => {
     getTraveler(travelerId).then(setTraveler).catch(() => setTraveler(null));
+    listCorporateRequests().then(setRequests).catch(() => setRequests([]));
   }, [travelerId]);
+
+  const linkedRequest = useMemo(() => {
+    const email = traveler?.email.toLowerCase();
+    if (!email) return null;
+    return requests.find((request) => request.travellerEmail.toLowerCase() === email) || null;
+  }, [requests, traveler]);
+
+  async function sendDocumentUpdateEmail() {
+    if (!traveler || !linkedRequest) {
+      setNotification("Document update email requires a linked travel request.");
+      return;
+    }
+    setSendingNotification(true);
+    setNotification("Sending document update email...");
+    try {
+      const result = await sendCorporateRequestNotification(linkedRequest.id, {
+        kind: "document_update",
+        to: [traveler.email],
+        note: "Please update missing or expiring travel documents before itinerary finalization.",
+        attach_itinerary: false
+      });
+      setNotification(result.safe_message);
+    } catch {
+      setNotification("Document update email could not be sent. Continue with manual follow-up.");
+    } finally {
+      setSendingNotification(false);
+    }
+  }
 
   return (
     <AppShell active="travelers">
@@ -1318,7 +1350,12 @@ export function TravelerDossierScreen({ travelerId }: { travelerId: string }) {
       </section>
       <section className="workspace-grid">
         <article className="ops-card detail-card"><h2>Travel Preferences</h2><p>Seat: {traveler?.seat_preference || "Not set"}</p><p>Meal: {traveler?.meal_preference || "Not set"}</p><p>Hotel: {traveler?.hotel_preference || "Not set"}</p></article>
-        <article className="ops-card detail-card"><h2>Travel Documents</h2>{traveler?.documents.map((doc) => <p key={doc.label}><strong>{doc.label}</strong> {doc.status}</p>) || <p>No documents loaded</p>}</article>
+        <article className="ops-card detail-card">
+          <h2>Travel Documents</h2>
+          {traveler?.documents.map((doc) => <p key={doc.label}><strong>{doc.label}</strong> {doc.status}</p>) || <p>No documents loaded</p>}
+          <button className="secondary-button" type="button" onClick={() => void sendDocumentUpdateEmail()} disabled={sendingNotification || !traveler}><Send size={16} /> Send Document Update</button>
+          {notification ? <p role="status">{notification}</p> : null}
+        </article>
         <article className="ops-card detail-card"><h2>Policy Guard</h2>{traveler?.policy_notes.map((note) => <p key={note}>{note}</p>) || <p>No policy exceptions loaded</p>}</article>
       </section>
     </AppShell>

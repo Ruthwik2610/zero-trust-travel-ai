@@ -132,6 +132,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Both actions show safe status messages and update local revision state.
 - Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
 
+### 2026-05-22 Traveler Document Notification Checkpoint
+
+- Traveler dossier now sends document-update emails through the existing Resend-backed request notification API.
+- The action requires a linked corporate request for the traveler email and shows safe manual-follow-up copy on failure.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.
