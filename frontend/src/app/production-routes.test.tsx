@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import RequestPage from "./requests/[id]/page";
@@ -9,6 +9,7 @@ import PolicyPage from "./policy/page";
 import PolicyDetailPage from "./policy/[id]/page";
 import PolicyReviewPage from "./policy/[id]/review/page";
 import PolicyActivityPage from "./policy/activity/page";
+import { listPolicyActivity } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   getStoredAuthContext: vi.fn(() => ({
@@ -57,5 +58,34 @@ describe("production command center routes", () => {
       expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
       unmount();
     }
+  });
+
+  it("exports policy activity archive rows as CSV", async () => {
+    vi.mocked(listPolicyActivity).mockResolvedValue([
+      {
+        id: "activity_1",
+        policy_id: "policy_global_travel_2024",
+        revision_id: "rev_1",
+        actor: "policy.manager@unipro.com",
+        activity: "Approved policy revision",
+        status: "Approved",
+        created_at: "2026-05-22T00:00:00.000Z"
+      }
+    ]);
+    const objectUrl = "blob:policy-activity";
+    const createObjectUrl = vi.fn(() => objectUrl);
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectUrl, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectUrl, configurable: true });
+
+    render(<PolicyActivityPage />);
+
+    expect(await screen.findByText("Approved policy revision")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    await waitFor(() => {
+      expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
+    });
+    expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
   });
 });

@@ -120,6 +120,12 @@ As of plan recording, implementation had started after cleanup. The index was re
 - Audit messages use safe operational text and do not expose traveler email, provider credentials, or stack traces.
 - Verified after this slice: backend pytest.
 
+### 2026-05-22 Policy Activity Export Checkpoint
+
+- Policy activity archive now includes an `Export CSV` affordance backed by the loaded activity rows.
+- CSV export is client-side and does not expose tokens or backend internals.
+- Verified after this slice: backend pytest, frontend Vitest, and `npm run build -- --webpack`.
+
 ## Implementation Style
 
 Follow the user's requested Karpathy-style discipline: keep the system simple, readable, and easy to debug; avoid speculative abstractions; prefer deterministic rules for policy/budget/visa decisions; use LLM output for narrative drafts, not core authority; keep each change inspectable and backed by tests.

@@ -1389,10 +1389,25 @@ export function PolicyActivityArchiveScreen() {
     listPolicyActivity().then(setEvents).catch(() => setEvents([]));
   }, []);
 
+  function exportCsv() {
+    const rows = [
+      ["Timestamp", "Actor", "Activity", "Status"],
+      ...events.map((event) => [event.created_at, event.actor, event.activity, event.status])
+    ];
+    const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "policy-activity.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <AppShell active="policy">
       <section className="page-heading">
         <div><h1>Policy Activity Archive</h1><p>Complete audit trail of policy modifications and agent interactions.</p></div>
+        <button className="secondary-button" type="button" onClick={exportCsv}><Download size={16} /> Export CSV</button>
       </section>
       <section className="ops-card table-card">
         <div className="request-table">
@@ -1404,6 +1419,10 @@ export function PolicyActivityArchiveScreen() {
       </section>
     </AppShell>
   );
+}
+
+function csvCell(value: string) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
 }
 
 export function AdminDashboard() {
