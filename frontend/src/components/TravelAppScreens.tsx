@@ -529,7 +529,7 @@ export function LoginScreen() {
         <h2>Sign in</h2>
         <label>
           <span>Email</span>
-          <input autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+          <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
         </label>
         <label>
           <span>Password</span>
