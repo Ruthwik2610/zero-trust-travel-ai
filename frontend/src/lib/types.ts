@@ -105,6 +105,14 @@ export type TravelChatRequest = {
   message: string;
   history?: TravelChatMessage[];
   trip?: Trip | null;
+  budget_context?: Array<{
+    plan_id: string;
+    name: string;
+    estimated_total: number;
+    currency: string;
+    tradeoffs?: string;
+  }>;
+  source_context?: Record<string, unknown>;
 };
 
 export type TravelChatResponse = {
@@ -144,15 +152,18 @@ export type CurrencyConversionResponse = {
 };
 
 export type CorporateRole = "admin" | "agent";
-export type CorporateRequestStatus = "new" | "planning" | "pending_approval" | "missing_info" | "finalized";
+export type CorporateRequestStatus = "new" | "planning" | "processing" | "pending_approval" | "missing_info" | "finalized";
 export type CorporateCheckStatus = "clear" | "attention" | "blocked" | "pending";
 export type CorporateApprovalStatus = "Not Required" | "Required" | "Received" | "Rejected";
 
 export type CorporatePlanOption = {
   id: string;
   name: string;
+  flightOfferId?: string | null;
+  groundTransferOfferId?: string | null;
   flightSummary: string;
   hotelSummary: string;
+  transferSummary: string;
   totalAmount: number;
   currency: string;
   policyFit: string;
@@ -160,20 +171,111 @@ export type CorporatePlanOption = {
   selected?: boolean;
 };
 
+export type CorporateFlightOffer = {
+  id: string;
+  provider: string;
+  airline: string;
+  summary: string;
+  totalAmount: number;
+  currency: string;
+  outbound: string;
+  returnLeg?: string | null;
+  cabin: Cabin;
+  expiresAt?: string | null;
+  source: "duffel" | "synthetic";
+  notes: string[];
+  selected?: boolean;
+};
+
+export type CorporateHotelOffer = {
+  id: string;
+  provider: string;
+  name: string;
+  summary: string;
+  totalAmount: number;
+  currency: string;
+  address?: string | null;
+  starRating?: number | null;
+  checkIn?: string | null;
+  checkOut?: string | null;
+  checkInStartsAt?: string | null;
+  checkoutTime?: string | null;
+  roomNotes?: string | null;
+  cancellationNotes?: string | null;
+  unsentSpecialRequests: string[];
+  nights: number;
+  rooms: number;
+  guests: number;
+  imageUrl?: string | null;
+  source: "booking" | "synthetic";
+  notes: string[];
+  selected?: boolean;
+};
+
+export type CorporateGroundTransferOffer = {
+  id: string;
+  provider: string;
+  offerId?: string | null;
+  pickupAirportCode: string;
+  pickupTime?: string | null;
+  dropoffLabel: string;
+  dropoffAddress?: string | null;
+  serviceType: string;
+  vehicleType?: string | null;
+  passengers: number;
+  baggage?: string | null;
+  totalAmount: number;
+  currency: string;
+  cancellationNotes?: string | null;
+  source: "amadeus" | "synthetic";
+  notes: string[];
+  selected?: boolean;
+};
+
+export type ClientReviewStatus = "Not Sent" | "Sent" | "Changes Requested" | "Approved" | "Agent Review Required" | "Expired";
+
+export type CorporateClientReviewEvent = {
+  id: string;
+  action: "sent" | "approved" | "edits_requested" | "agent_review_required";
+  revisionRound: number;
+  selectedOptionIndex?: number | null;
+  editRequestText?: string | null;
+  changeSummary?: string | null;
+  createdAt: string;
+};
+
+export type CorporateClientReview = {
+  status: ClientReviewStatus;
+  reviewUrl?: string | null;
+  selectedOptionIndex?: number | null;
+  editRequestText?: string | null;
+  revisionRound: number;
+  changeSummary?: string | null;
+  expiresAt?: string | null;
+  sentAt?: string | null;
+  submittedAt?: string | null;
+};
+
 export type CorporateTravelRequest = {
   id: string;
   travellerName: string;
   travellerEmail: string;
+  travellerNationality: string;
   company: string;
   origin: string;
   destination: string;
   departDate: string;
   returnDate: string;
+  includeOutboundFlight: boolean;
+  includeReturnFlight: boolean;
+  includeHotel: boolean;
   purpose: string;
   preferences: string;
   budgetAmount: number;
   budgetCurrency: string;
   specialRequests: string;
+  criticalIssue: string;
+  criticalIssueStatus: "None" | "Urgent" | "Resolved";
   status: CorporateRequestStatus;
   visaStatus: CorporateCheckStatus;
   budgetStatus: CorporateCheckStatus;
@@ -184,10 +286,90 @@ export type CorporateTravelRequest = {
   readinessCheck: string;
   budgetPolicyCheck: string;
   recommendedPlans: CorporatePlanOption[];
+  flightOffers: CorporateFlightOffer[];
+  selectedFlightOfferId?: string | null;
+  hotelOffers: CorporateHotelOffer[];
+  selectedHotelOfferId?: string | null;
+  groundTransferOffers: CorporateGroundTransferOffer[];
+  selectedGroundTransferOfferId?: string | null;
+  clientReview?: CorporateClientReview | null;
+  clientReviewHistory: CorporateClientReviewEvent[];
   missingInformation: string;
   customerMessageDraft: string;
   finalItineraryDraft: string;
   finalApproved: boolean;
+};
+
+export type ClientReviewOption = {
+  optionIndex: number;
+  optionName: string;
+  flightSummary: string;
+  hotelSummary: string;
+  transferSummary: string;
+  estimatedCost: number;
+  currency: string;
+  policyStatus: string;
+  recommendationReason: string;
+  pros: string[];
+  cons: string[];
+  flight?: {
+    id: string;
+    airline: string;
+    summary: string;
+    outbound: string;
+    returnLeg?: string | null;
+    cabin: Cabin;
+    totalAmount: number;
+    currency: string;
+    notes: string[];
+  } | null;
+  hotel?: {
+    id: string;
+    name: string;
+    summary: string;
+    address?: string | null;
+    checkIn?: string | null;
+    checkOut?: string | null;
+    checkInStartsAt?: string | null;
+    checkoutTime?: string | null;
+    roomNotes?: string | null;
+    cancellationNotes?: string | null;
+    unsentSpecialRequests: string[];
+    totalAmount: number;
+    currency: string;
+  } | null;
+  transfer?: {
+    id: string;
+    pickupAirportCode: string;
+    pickupTime?: string | null;
+    dropoffLabel: string;
+    dropoffAddress?: string | null;
+    serviceType: string;
+    vehicleType?: string | null;
+    passengers: number;
+    baggage?: string | null;
+    totalAmount: number;
+    currency: string;
+    cancellationNotes?: string | null;
+    notes: string[];
+  } | null;
+};
+
+export type ClientReviewResponse = {
+  requestId: string;
+  travelerName: string;
+  companyName: string;
+  route: string;
+  departDate?: string | null;
+  returnDate?: string | null;
+  status: ClientReviewStatus;
+  revisionRound: number;
+  expiresAt?: string | null;
+  submittedAt?: string | null;
+  changeSummary?: string | null;
+  specialRequestNotice: string;
+  options: ClientReviewOption[];
+  history: CorporateClientReviewEvent[];
 };
 
 export type CorporateCreateRequest = {
@@ -198,6 +380,9 @@ export type CorporateCreateRequest = {
   destination: string;
   departDate: string;
   returnDate: string;
+  includeOutboundFlight: boolean;
+  includeReturnFlight: boolean;
+  includeHotel: boolean;
   purpose: string;
   preferences: string;
   budgetAmount: number;
@@ -207,7 +392,8 @@ export type CorporateCreateRequest = {
 
 export type CorporateRequestUpdate = Partial<Pick<
   CorporateTravelRequest,
-  "aiSummary" | "readinessCheck" | "budgetPolicyCheck" | "missingInformation" | "customerMessageDraft" | "finalItineraryDraft" | "recommendedPlans" | "status" | "budgetStatus" | "approvalStatus" | "finalApproved"
+  "travellerName" | "travellerEmail" | "travellerNationality" | "company" | "origin" | "destination" | "departDate" | "returnDate" | "includeOutboundFlight" | "includeReturnFlight" | "includeHotel" | "purpose" | "preferences" | "specialRequests"
+  | "aiSummary" | "readinessCheck" | "budgetAmount" | "budgetCurrency" | "budgetPolicyCheck" | "missingInformation" | "customerMessageDraft" | "finalItineraryDraft" | "recommendedPlans" | "flightOffers" | "selectedFlightOfferId" | "hotelOffers" | "selectedHotelOfferId" | "groundTransferOffers" | "selectedGroundTransferOfferId" | "status" | "budgetStatus" | "approvalStatus" | "finalApproved"
 >> & {
   agent_reviewed?: boolean;
   approval_status?: CorporateApprovalStatus;
@@ -218,6 +404,23 @@ export type CorporateUploadResponse = {
   createdRequests: number;
   skippedRows: number;
   requests: CorporateTravelRequest[];
+  employeeProfiles: number;
+};
+
+export type CompanyPolicyImportResponse = {
+  companyName: string;
+  policyCount: number;
+  rules: string[];
+};
+
+export type CompanyPipelineStatus = {
+  companyName: string;
+  travelerCount: number;
+  travelerListStatus: "Updated" | "Missing";
+  policyStatus: "Uploaded" | "Missing";
+  policyCount: number;
+  visaRecordCount: number;
+  historyRowCount: number;
 };
 
 export type CorporateAdminSummary = {
@@ -306,5 +509,7 @@ export type EmailEvent = {
   subject?: string | null;
   provider_message_id?: string | null;
   safe_message: string;
+  body_text?: string | null;
+  attachment_names?: string[];
   created_at: string;
 };

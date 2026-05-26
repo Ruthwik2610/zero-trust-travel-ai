@@ -17,6 +17,16 @@ data/
 uploads/
 logs/
 *.log
+tmp/
+
+# Generated collateral and local demo data
+docs/*.pdf
+docs/client-forms/
+docs/company-data/
+docs/assets/workflow-guide/
+docs/synthetic-forms/
+docs/superpowers/
+frontend/public/videos/
 
 # Python
 .venv/
@@ -45,6 +55,8 @@ lighthouse-report/
 
 # Caches and OS files
 .cache/
+.superpowers/
+.Jules/
 .DS_Store
 Thumbs.db
 

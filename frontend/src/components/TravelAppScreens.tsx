@@ -3,23 +3,23 @@
 import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowRight,
   BarChart3,
   Building2,
   CalendarDays,
+  Car,
   CheckCircle2,
   ClipboardCheck,
   Clock3,
+  Trash2,
   Download,
   FileSpreadsheet,
   FileText,
   History,
   IdCard,
-  KeyRound,
-  LayoutDashboard,
-  LogOut,
+  Lock,
   MessageSquare,
   Moon,
-  MoreVertical,
   Plane,
   Plus,
   RefreshCw,
@@ -30,6 +30,7 @@ import {
   Sun,
   Upload,
   User,
+  Users as UsersIcon,
   WalletCards,
   type LucideIcon
 } from "lucide-react";
@@ -40,15 +41,19 @@ import {
   clearAuthSession,
   createCorporateRequest,
   demoLogin,
+  deleteCorporateRequest,
+  downloadClientRequestFormPdf,
   downloadCorporateExcelTemplate,
-  downloadCorporateRequestExcel,
+  downloadCorporateRequestPdf,
   finalizeCorporateRequest,
   generateCorporateTravelPlan,
   getAuditEvents,
   getCorporateAdminSummary,
+  getEmailEvents,
   getStoredAuthContext,
   getPolicy,
   getTraveler,
+  listCompanyPipelineStatuses,
   listCorporateRequests,
   listPolicies,
   listPolicyActivity,
@@ -56,20 +61,35 @@ import {
   listTravelers,
   approvePolicyRevision,
   requestPolicyRevisionChanges,
+  runCorporateRequestPipeline,
+  saveTravelerProfile,
   sendCorporateRequestNotification,
   storeAuthSession,
+  updateCorporateCriticalIssue,
   updateCorporateRequest,
+  uploadCompanyPolicyPdf,
+  getClientReview,
+  submitClientReview,
   uploadCorporateRequests
 } from "@/lib/api";
 import type {
   AuthContext,
   AuditEvent,
+  ClientReviewOption,
+  ClientReviewResponse,
+  CompanyPipelineStatus,
+  CompanyPolicyImportResponse,
   CorporateAdminSummary,
   CorporateCreateRequest,
+  CorporateFlightOffer,
+  CorporateGroundTransferOffer,
+  CorporateHotelOffer,
   CorporatePlanOption,
+  CorporateRequestUpdate,
   CorporateRole,
   CorporateTravelRequest,
   CorporateUploadResponse,
+  EmailEvent,
   PolicyActivityEvent,
   PolicyGroup,
   PolicyRevision,
@@ -77,9 +97,17 @@ import type {
   TravelerProfile
 } from "@/lib/types";
 
-type TravelChatLine = {
-  role: "user" | "assistant";
-  content: string;
+type QueueFilter = "new_entries" | "needs_details" | "processing" | "completed";
+type RosterReviewKind = "registration" | "profile_update";
+type RosterReviewItem = {
+  id: string;
+  kind: RosterReviewKind;
+  travelerName: string;
+  travelerEmail: string;
+  company: string;
+  source: string;
+  summary: string;
+  extractedFields: string[];
 };
 
 const DEFAULT_EMAIL = "demo.agent@unipro.com";
@@ -87,18 +115,20 @@ const DEFAULT_PASSWORD = "travel-demo-2026";
 const SELECTED_ROLE_KEY = "travel_ai_selected_role";
 const USER_EMAIL_KEY = "travel_ai_user_email";
 
-const ROLE_ACCOUNTS: Record<CorporateRole, { label: string; email: string; description: string; path: string; icon: LucideIcon }> = {
+const ROLE_ACCOUNTS: Record<CorporateRole, { label: string; email: string; username: string; description: string; path: string; icon: LucideIcon }> = {
   admin: {
     label: "Application Admin",
     email: "admin.user@unipro.com",
-    description: "Manage company policy, client data, and operations reporting.",
+    username: "admin",
+    description: "Import policy, traveler history, and visa rules.",
     path: "/admin",
     icon: ShieldCheck
   },
   agent: {
     label: "Travel Agent",
     email: "demo.agent@unipro.com",
-    description: "Create requests, generate AI plans, review, finalize, and export.",
+    username: "agent",
+    description: "Plan, review, and finalize itineraries.",
     path: "/dashboard",
     icon: Plane
   }
@@ -112,12 +142,57 @@ const EMPTY_FORM: CorporateCreateRequest = {
   destination: "",
   departDate: "",
   returnDate: "",
+  includeOutboundFlight: true,
+  includeReturnFlight: true,
+  includeHotel: true,
   purpose: "",
   preferences: "",
   budgetAmount: 150000,
   budgetCurrency: "INR",
   specialRequests: ""
 };
+
+const PREFERENCE_OPTIONS = [
+  "Aisle seat",
+  "Window seat",
+  "Vegetarian meal",
+  "Non-veg meal",
+  "Direct flights",
+  "Hotel near office",
+  "Morning flights"
+];
+
+const SPECIAL_REQUEST_OPTIONS = [
+  "Airport pickup",
+  "Extra baggage",
+  "Wheelchair assistance",
+  "Late check-in",
+  "Early check-in",
+  "Quiet room"
+];
+
+const INITIAL_ROSTER_REVIEW_ITEMS: RosterReviewItem[] = [
+  {
+    id: "registration-ananya-shah",
+    kind: "registration",
+    travelerName: "Ananya Shah",
+    travelerEmail: "ananya.shah@orbitex.example",
+    company: "Orbitex",
+    source: "New registration form",
+    summary: "LLM classified this as a new traveler registration from a submitted form.",
+    extractedFields: ["Mumbai home office", "Window seat", "Vegetarian meal", "Passport on file pending verification"]
+  },
+  {
+    id: "update-vikram-rao",
+    kind: "profile_update",
+    travelerName: "Vikram Rao",
+    travelerEmail: "vikram.rao@example.com",
+    company: "Unipro",
+    source: "Traveler update form",
+    summary: "LLM classified this as a profile update for reusable traveler data.",
+    extractedFields: ["Passport renewed", "Known traveler number added", "Hotel preference updated"]
+  }
+];
 
 function getStoredRole(): CorporateRole {
   if (typeof window === "undefined") return "agent";
@@ -135,6 +210,43 @@ function isAdminContext(auth: AuthContext | null, selectedRole: CorporateRole) {
   return selectedRole === "admin" && (auth.role === "travel_manager" || auth.role === "finance_admin" || auth.scopes.includes("admin:summary"));
 }
 
+function travelerFromReviewItem(item: RosterReviewItem): TravelerProfile {
+  const now = new Date().toISOString();
+  return {
+    id: `traveler_${item.travelerEmail.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")}`,
+    name: item.travelerName,
+    email: item.travelerEmail,
+    company: item.company,
+    department: null,
+    vip_level: null,
+    status: item.kind === "profile_update" ? "Document Update Required" : "Compliant",
+    location: null,
+    seat_preference: item.extractedFields.find((field) => /seat/i.test(field)) || null,
+    meal_preference: item.extractedFields.find((field) => /meal/i.test(field)) || null,
+    hotel_preference: item.extractedFields.find((field) => /hotel/i.test(field)) || null,
+    policy_notes: [],
+    loyalty_programs: item.extractedFields.some((field) => /known traveler/i.test(field))
+      ? [{ provider: "Known Traveler", tier: "On file", account_ref: "Pending review" }]
+      : [],
+    documents: [
+      {
+        document_type: "passport",
+        label: "Passport",
+        status: item.extractedFields.some((field) => /passport/i.test(field)) ? "Needs Review" : "Missing",
+        redacted_value: item.extractedFields.some((field) => /passport/i.test(field)) ? "Submitted by form" : null
+      }
+    ],
+    recent_trips: [],
+    created_at: now,
+    updated_at: now
+  };
+}
+
+function pendingRosterReviewItems(reviewItems: RosterReviewItem[], travelers: TravelerProfile[]) {
+  const travelerEmails = new Set(travelers.map((traveler) => traveler.email.toLowerCase()));
+  return reviewItems.filter((item) => item.kind !== "registration" || !travelerEmails.has(item.travelerEmail.toLowerCase()));
+}
+
 function navigateAfterLogin(path: string) {
   if (process.env.NODE_ENV === "test") {
     window.history.pushState({}, "", path);
@@ -146,9 +258,10 @@ function navigateAfterLogin(path: string) {
 async function ensureTravelSession(email = getStoredEmail()) {
   const current = getStoredAuthContext();
   if (current) return current;
-  const session = await demoLogin(email.trim() || DEFAULT_EMAIL);
-  storeAuthSession(session);
-  return session.user;
+  if (typeof window !== "undefined" && window.location.pathname !== "/") {
+    navigateAfterLogin("/");
+  }
+  throw new Error(`Sign in required for ${email || DEFAULT_EMAIL}`);
 }
 
 function formatMoney(amount: number, currency: string) {
@@ -157,6 +270,151 @@ function formatMoney(amount: number, currency: string) {
     currency,
     maximumFractionDigits: currency === "INR" || currency === "JPY" ? 0 : 2
   }).format(amount || 0);
+}
+
+function parseBudgetCommand(prompt: string) {
+  if (!/\b(budget|cost limit|spend limit|approved amount|amount)\b/i.test(prompt)) return null;
+  const lakhMatch = prompt.match(/(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*lakh/i);
+  if (lakhMatch) {
+    return { amount: Math.round(Number(lakhMatch[1]) * 100000), currency: "INR" };
+  }
+  const match = prompt.match(/(₹|rs\.?|inr|usd|eur|gbp|cad|aud|jpy|zar)?\s*(\d[\d,]*(?:\.\d+)?)\s*(inr|usd|eur|gbp|cad|aud|jpy|zar)?/i);
+  if (!match) return null;
+  const amount = Math.round(Number(match[2].replace(/,/g, "")));
+  if (!amount) return null;
+  const rawCurrency = (match[1] || match[3] || "INR").toUpperCase();
+  const currency = rawCurrency === "₹" || rawCurrency.startsWith("RS") ? "INR" : rawCurrency;
+  return { amount, currency };
+}
+
+function parseNationalityCommand(prompt: string) {
+  const match = prompt.match(/\b(?:nationality|citizenship|passport holder|passport)\s*(?:is|:|-)?\s*(indian|india|[a-z][a-z\s]{2,40})\b/i);
+  if (!match) return "";
+  const value = match[1].trim().replace(/[.,;:!?]+$/, "");
+  if (/^india$/i.test(value)) return "Indian";
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+const DATE_TOKEN_PATTERN = String.raw`(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?,?\s+\d{4})`;
+const DEPART_DATE_VOCABULARY = String.raw`(?:travel|trip|journey|depart(?:ure)?|outbound|start|leave|leaving|fly(?:ing)?\s*out|going|go)`;
+const RETURN_DATE_VOCABULARY = String.raw`(?:return|coming\s*back|come\s*back|inbound|end|back|arrival\s*back)`;
+
+function parseDatePhrase(value: string) {
+  const clean = value.trim().replace(/\b(on|date)\b/gi, "").replace(/[,.;]+$/g, "").replace(/\s+/g, " ");
+  const monthNames: Record<string, string> = {
+    jan: "01", january: "01",
+    feb: "02", february: "02",
+    mar: "03", march: "03",
+    apr: "04", april: "04",
+    may: "05",
+    jun: "06", june: "06",
+    jul: "07", july: "07",
+    aug: "08", august: "08",
+    sep: "09", sept: "09", september: "09",
+    oct: "10", october: "10",
+    nov: "11", november: "11",
+    dec: "12", december: "12"
+  };
+
+  function iso(year: string | number, month: string | number, day: string | number) {
+    const numericYear = Number(year) < 100 ? 2000 + Number(year) : Number(year);
+    const numericMonth = Number(month);
+    const numericDay = Number(day);
+    const date = new Date(Date.UTC(numericYear, numericMonth - 1, numericDay));
+    if (date.getUTCFullYear() !== numericYear || date.getUTCMonth() !== numericMonth - 1 || date.getUTCDate() !== numericDay) return "";
+    return `${numericYear}-${String(numericMonth).padStart(2, "0")}-${String(numericDay).padStart(2, "0")}`;
+  }
+
+  const isoMatch = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) return iso(isoMatch[1], isoMatch[2], isoMatch[3]);
+
+  const slashMatch = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (slashMatch) {
+    const first = Number(slashMatch[1]);
+    const second = Number(slashMatch[2]);
+    const day = first > 12 ? first : second;
+    const month = first > 12 ? second : first;
+    return iso(slashMatch[3], month, day);
+  }
+
+  const monthFirst = clean.match(/^([a-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$/i);
+  if (monthFirst) return iso(monthFirst[3], monthNames[monthFirst[1].toLowerCase()], monthFirst[2]);
+
+  const dayFirst = clean.match(/^(\d{1,2})\s+([a-z]+)\.?,?\s+(\d{4})$/i);
+  if (dayFirst) return iso(dayFirst[3], monthNames[dayFirst[2].toLowerCase()], dayFirst[1]);
+
+  return "";
+}
+
+function parseDateCommand(prompt: string) {
+  const datePattern = DATE_TOKEN_PATTERN;
+  const dateConnector = String.raw`(?:(?:is|are|to|:|-|on)\s*){0,2}`;
+  const departLabel = String.raw`${DEPART_DATE_VOCABULARY}\s*(?:date)?`;
+  const returnLabel = String.raw`${RETURN_DATE_VOCABULARY}\s*(?:date)?`;
+  const pairMatch = prompt.match(new RegExp(`\\b(?:dates?|travel dates?|${departLabel}\\s*(?:and|&)\\s*${returnLabel})\\b\\s*${dateConnector}(${datePattern})\\s*(?:to|through|until|-|and|&)\\s*(?:${returnLabel}\\s*)?${dateConnector}(${datePattern})`, "i"));
+  const departMatch = prompt.match(new RegExp(`\\b${departLabel}\\s*${dateConnector}(${datePattern})`, "i"));
+  const returnMatch = prompt.match(new RegExp(`\\b${returnLabel}\\s*${dateConnector}(${datePattern})`, "i"));
+  const departDate = parseDatePhrase(departMatch?.[1] || pairMatch?.[1] || "");
+  const returnDate = parseDatePhrase(returnMatch?.[1] || pairMatch?.[2] || "");
+  if (!departDate && !returnDate) return null;
+  if (departDate && returnDate && returnDate < departDate) {
+    return { departDate, returnDate, error: "Return date must be on or after the depart date." };
+  }
+  return { departDate, returnDate, error: "" };
+}
+
+type EditableRequestTextField =
+  | "travellerName"
+  | "travellerEmail"
+  | "company"
+  | "origin"
+  | "destination"
+  | "purpose"
+  | "preferences"
+  | "specialRequests";
+
+const EDITABLE_TEXT_FIELD_LABELS: Record<EditableRequestTextField, string> = {
+  travellerName: "Traveller name",
+  travellerEmail: "Traveller email",
+  company: "Company",
+  origin: "Origin",
+  destination: "Destination",
+  purpose: "Trip purpose",
+  preferences: "Preferences",
+  specialRequests: "Special requests"
+};
+
+function parseTextFieldCommand(prompt: string): { key: EditableRequestTextField; value: string } | null {
+  const aliases: Array<[EditableRequestTextField, RegExp]> = [
+    ["travellerName", /\b(?:travell?er\s*)?name\b/i],
+    ["travellerEmail", /\b(?:travell?er\s*)?email\b/i],
+    ["company", /\b(?:company|client company|organisation|organization)\b/i],
+    ["origin", /\b(?:origin|from city|from airport|departure city|departure airport)\b/i],
+    ["destination", /\b(?:destination|to city|to airport|arrival city|arrival airport)\b/i],
+    ["purpose", /\b(?:purpose|trip purpose|reason)\b/i],
+    ["preferences", /\b(?:preferences?|travel preferences?|seat preference|meal preference|hotel preference)\b/i],
+    ["specialRequests", /\b(?:special requests?|requests?|accessibility notes?|transfer notes?)\b/i]
+  ];
+  for (const [key, alias] of aliases) {
+    const updatePattern = new RegExp(`(?:update|set|change|correct|edit)\\s+(?:the\\s+)?${alias.source}\\s*(?:to|as|is|:|-)\\s+(.+)`, "i");
+    const directPattern = new RegExp(`${alias.source}\\s*(?:is|:|-)\\s+(.+)`, "i");
+    const match = prompt.match(updatePattern) || prompt.match(directPattern);
+    if (!match) continue;
+    const value = match[1].trim().replace(/^["']|["']$/g, "").replace(/[.;]+$/g, "");
+    if (!value || value.length > 240) return null;
+    if (key === "travellerEmail" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return null;
+    return { key, value };
+  }
+  return null;
+}
+
+function removeMissingField(value: string, fieldPattern: RegExp) {
+  return value
+    .split(/\n|;/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !fieldPattern.test(line))
+    .join("\n");
 }
 
 function formatDate(value: string) {
@@ -172,16 +430,23 @@ function formatUpdated(value: string) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(parsed);
 }
 
-function initialsFor(value: string) {
-  return value
-    .split(/[.@\s_-]/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("") || "UA";
+function formatDateTimeText(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(parsed);
+}
+
+function displayNameFromEmail(email: string) {
+  const localPart = email.split("@")[0] || email;
+  return localPart.replace(/[._-]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isActiveRequest(request: CorporateTravelRequest) {
+  return request.status !== "finalized";
 }
 
 function summaryFromRequests(requests: CorporateTravelRequest[]): CorporateAdminSummary {
+  const activeRequests = requests.filter(isActiveRequest);
   const destinationCounts = requests.reduce<Record<string, number>>((counts, request) => {
     counts[request.destination] = (counts[request.destination] || 0) + 1;
     return counts;
@@ -189,9 +454,9 @@ function summaryFromRequests(requests: CorporateTravelRequest[]): CorporateAdmin
   return {
     totalRequests: requests.length,
     newRequests: requests.filter((request) => request.status === "new").length,
-    pendingApprovals: requests.filter((request) => request.approvalStatus === "Required").length,
+    pendingApprovals: activeRequests.filter((request) => request.status === "processing" || request.approvalStatus === "Required").length,
     missingInfo: requests.filter((request) => request.status === "missing_info").length,
-    visaIssues: requests.filter((request) => request.visaStatus !== "clear").length,
+    visaIssues: activeRequests.filter((request) => request.visaStatus !== "clear").length,
     finalizedItineraries: requests.filter((request) => request.status === "finalized").length,
     averageHandlingTimeHours: 3.8,
     commonDestinations: Object.entries(destinationCounts)
@@ -204,13 +469,6 @@ function summaryFromRequests(requests: CorporateTravelRequest[]): CorporateAdmin
 function buildDashboardRequests(requests: CorporateTravelRequest[]) {
   return requests;
 }
-
-type BoardColumn = {
-  key: string;
-  title: string;
-  description: string;
-  requests: CorporateTravelRequest[];
-};
 
 function compactTime(value: string) {
   const parsed = new Date(value);
@@ -230,6 +488,10 @@ function updatedAge(value: string) {
 
 function routeText(request: CorporateTravelRequest) {
   return `${request.origin || "Origin pending"} → ${request.destination || "Destination pending"}`;
+}
+
+function formatTicketDateRange(request: CorporateTravelRequest) {
+  return `${formatDate(request.departDate)} - ${formatDate(request.returnDate)}`;
 }
 
 function corporateRequestTripContext(request: CorporateTravelRequest): Trip {
@@ -254,20 +516,20 @@ function corporateRequestTripContext(request: CorporateTravelRequest): Trip {
       kind: "flight",
       title: plan.flightSummary,
       provider: "corporate-plan",
-      price_usd: 0,
+      price_usd: plan.currency === "USD" ? plan.totalAmount : 0,
       currency: plan.currency,
       refundable: false,
-      notes: [plan.tradeoffs]
+      notes: [`Estimated total ${plan.totalAmount} ${plan.currency}`, plan.tradeoffs].filter(Boolean)
     })),
     hotel_offers: request.recommendedPlans.map((plan) => ({
       id: `${plan.id}-hotel`,
       kind: "hotel",
       title: plan.hotelSummary,
       provider: "corporate-plan",
-      price_usd: 0,
+      price_usd: plan.currency === "USD" ? plan.totalAmount : 0,
       currency: plan.currency,
       refundable: false,
-      notes: [plan.policyFit]
+      notes: [`Estimated total ${plan.totalAmount} ${plan.currency}`, plan.policyFit].filter(Boolean)
     })),
     itinerary: [],
     policy_checks: [request.budgetPolicyCheck, request.readinessCheck].filter(Boolean),
@@ -277,6 +539,12 @@ function corporateRequestTripContext(request: CorporateTravelRequest): Trip {
 }
 
 function priorityFor(request: CorporateTravelRequest): "High" | "Medium" | "Low" {
+  if (request.status === "finalized") {
+    return "Low";
+  }
+  if (request.criticalIssueStatus === "Urgent") {
+    return "High";
+  }
   if (
     request.status === "missing_info"
     || request.visaStatus === "blocked"
@@ -293,7 +561,9 @@ function priorityFor(request: CorporateTravelRequest): "High" | "Medium" | "Low"
 }
 
 function priorityReasons(request: CorporateTravelRequest) {
+  if (request.status === "finalized") return ["Completed"];
   const reasons: string[] = [];
+  if (request.criticalIssueStatus === "Urgent") reasons.push("Critical issue");
   if (request.status === "missing_info" || request.missingInformation) reasons.push("Missing info");
   if (request.visaStatus === "blocked" || request.visaStatus === "pending") reasons.push("Visa issue");
   if (request.budgetStatus === "blocked" || request.budgetStatus === "attention") reasons.push("Over budget");
@@ -302,8 +572,11 @@ function priorityReasons(request: CorporateTravelRequest) {
 }
 
 function nextActionFor(request: CorporateTravelRequest) {
+  if (request.status === "finalized") return "Completed";
+  if (request.criticalIssueStatus === "Urgent") return "Work issue";
   if (request.status === "missing_info") return "Ask for info";
   if (request.status === "new") return "Generate plan";
+  if (request.status === "processing") return "Await client approval";
   if (request.status === "planning") return "Review plan";
   if (request.status === "pending_approval" || request.approvalStatus === "Required") return "Track approval";
   if (!request.finalApproved) return "Finalize itinerary";
@@ -312,30 +585,20 @@ function nextActionFor(request: CorporateTravelRequest) {
 }
 
 function boardStageFor(request: CorporateTravelRequest) {
-  if (request.status === "missing_info") return "waiting_info";
-  if (request.status !== "finalized" && request.approvalStatus === "Received" && !request.finalApproved) return "ready_finalize";
-  if (request.status === "new") return "ready_plan";
-  if (request.status === "planning") return "in_process";
-  if (request.status === "pending_approval" || request.approvalStatus === "Required") return "waiting_approval";
   if (request.status === "finalized") return "completed";
-  return "in_process";
+  if (request.criticalIssueStatus === "Urgent") return "new_entries";
+  if (request.status === "missing_info") return "needs_details";
+  if (request.status === "processing" || request.status === "planning" || request.status === "pending_approval") return "processing";
+  return "new_entries";
 }
 
-function boardColumnsFor(requests: CorporateTravelRequest[]): BoardColumn[] {
-  const columns = [
-    { key: "waiting_info", title: "Waiting For Information", description: "Blocked until client or traveler details arrive." },
-    { key: "ready_plan", title: "Ready To Plan", description: "Complete enough for provider search and plan generation." },
-    { key: "in_process", title: "In Process", description: "Being planned, reviewed, or edited by an agent." },
-    { key: "waiting_approval", title: "Waiting For Approval", description: "Plan exists and approval is still required." },
-    { key: "ready_finalize", title: "Ready To Finalize", description: "Reviewed work waiting for itinerary export." },
-    { key: "completed", title: "Completed", description: "Final itinerary and export are complete." },
-  ];
-  return columns.map((column) => ({
-    ...column,
-    requests: requests.filter((request) => {
-      return boardStageFor(request) === column.key;
-    })
-  }));
+function queueFilterFor(request: CorporateTravelRequest): QueueFilter {
+  return boardStageFor(request) as QueueFilter;
+}
+
+function firstAvailableQueueFilter(requests: CorporateTravelRequest[], current: QueueFilter): QueueFilter {
+  if (requests.some((request) => queueFilterFor(request) === current)) return current;
+  return (["new_entries", "processing", "needs_details", "completed"] as QueueFilter[]).find((filter) => requests.some((request) => queueFilterFor(request) === filter)) || "new_entries";
 }
 
 function useSelectedRole() {
@@ -396,31 +659,30 @@ function ThemeToggle() {
 function UniproLogo() {
   return (
     <span className="brand-lockup">
-      <img src="/unipro-icon.svg" alt="" aria-hidden="true" />
-      <span>
-        <strong>Unipro</strong>
-        <small>Corporate Travel</small>
-      </span>
+      <img src="/unipro-logo.png" alt="Unipro" />
+      <strong>Travel Operations</strong>
     </span>
   );
 }
 
 function StatusPill({ value }: { value: string }) {
-  const normalized = value.replace(/[_\s]+/g, "-");
+  const normalized = value.replace(/[_\s]+/g, "-").toLowerCase();
   return <span className={`status-pill ${normalized}`}>{value.replace(/_/g, " ")}</span>;
 }
 
-type AppArea = "dashboard" | "requests" | "itineraries" | "travelers" | "policy" | "admin";
+type AppArea = "dashboard" | "requests" | "itineraries" | "travelers" | "policy" | "audit" | "admin";
 
-function AppShell({ active, children }: { active: AppArea; children: ReactNode }) {
-  const role = useSelectedRole();
+function AppShell({ active, children, notificationCount }: { active: AppArea; children: ReactNode; notificationCount?: number }) {
   const auth = useTravelAuth();
   const [storedEmail, setStoredEmail] = useState(DEFAULT_EMAIL);
   const displayEmail = auth?.email || storedEmail;
-  const adminAllowed = isAdminContext(auth, role);
+  const displayName = displayNameFromEmail(displayEmail);
   const canReadPolicy = Boolean(auth?.scopes.some((scope) => scope === "policy:read" || scope === "policy:write" || scope === "admin:summary"));
-  const canReadAdmin = Boolean(auth?.scopes.includes("admin:summary"));
-  const roleMeta = ROLE_ACCOUNTS[role];
+  const canReadAudit = Boolean(auth?.scopes.some((scope) => scope === "travel:plan" || scope === "admin:audit" || scope === "admin:summary"));
+  const roleMeta = ROLE_ACCOUNTS.agent;
+  const workspaceHome = "/dashboard";
+  const workspaceTitle = "Agent Workspace";
+  const workspaceContext = "Requests, forms, roster, policy flags";
 
   useEffect(() => {
     setStoredEmail(getStoredEmail());
@@ -435,74 +697,65 @@ function AppShell({ active, children }: { active: AppArea; children: ReactNode }
 
   return (
     <main className="ops-shell">
-      <aside className="ops-sidebar">
-        <Link href="/dashboard" aria-label="Travel dashboard"><UniproLogo /></Link>
-        <span className="sidebar-label">Roles</span>
+      <aside className="ops-sidebar" aria-label="Travel workspace sections">
+        <Link className="sidebar-brand" href={workspaceHome} aria-label={workspaceTitle}><UniproLogo /></Link>
         <nav aria-label="Travel operations navigation">
-          <Link className={active === "dashboard" ? "active" : ""} href="/dashboard"><User size={18} /> Agent Operations</Link>
-          <Link className={active === "requests" ? "active" : ""} href="/requests/workspace"><ClipboardCheck size={18} /> Requests</Link>
-          <Link className={active === "itineraries" ? "active" : ""} href="/itineraries/builder"><Plane size={18} /> Itineraries</Link>
-          <Link className={active === "travelers" ? "active" : ""} href="/travelers"><IdCard size={18} /> Travelers</Link>
-          {canReadPolicy ? <Link className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /> Policy</Link> : null}
-          {canReadAdmin ? <Link className={active === "admin" ? "active" : ""} href="/admin"><BarChart3 size={18} /> Application Admin</Link> : null}
+          <Link className={active === "dashboard" || active === "requests" ? "active" : ""} href="/dashboard"><User size={18} /><span className="nav-label">Agent Operations</span></Link>
+          <Link className={active === "itineraries" ? "active" : ""} href="/planner"><Plane size={18} /><span className="nav-label">Itineraries</span></Link>
+          <Link className={active === "travelers" ? "active" : ""} href="/travelers"><IdCard size={18} /><span className="nav-label">Traveler Roster</span></Link>
+          {canReadPolicy ? <Link className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /><span className="nav-label">Policy Context</span></Link> : null}
+          {canReadAudit ? <Link className={active === "audit" ? "active" : ""} href="/audit"><History size={18} /><span className="nav-label">Audit</span></Link> : null}
         </nav>
         <div className="sidebar-footer">
-          <div className="sidebar-user">
-            <span className="avatar">{initialsFor(displayEmail)}</span>
-            <div>
-              <strong>{displayEmail.includes("admin") ? "Jane Smith" : "Jane Smith"}</strong>
-              <span>{adminAllowed ? "Application Admin" : roleMeta.label}</span>
-            </div>
-          </div>
+          <span className="sidebar-label">Workspace</span>
+          <button aria-label="Sign out" className="sign-out-button" type="button" onClick={signOut}>
+            <span className="nav-label">Sign out</span>
+          </button>
         </div>
       </aside>
-      <section className="ops-main">
+      <section className="ops-main-shell">
         <header className="ops-topbar">
-          <div className="topbar-control">
-            <span>Role:</span>
-            <select
-              aria-label="Role"
-              value={role}
-              onChange={(event) => {
-                const next = event.target.value as CorporateRole;
-                window.localStorage.setItem(SELECTED_ROLE_KEY, next);
-                window.localStorage.setItem(USER_EMAIL_KEY, ROLE_ACCOUNTS[next].email);
-                window.location.assign(ROLE_ACCOUNTS[next].path);
-              }}
-            >
-              <option value="agent">Travel Agent</option>
-              {canReadAdmin ? <option value="admin">Application Admin</option> : null}
-            </select>
+          <div className="topbar-context" aria-label="Current workspace">
+            <span>{workspaceTitle}</span>
+            <strong>{workspaceContext}</strong>
           </div>
-          <ThemeToggle />
-          <button className="sign-out-button" type="button" onClick={signOut}><LogOut size={16} /> Sign out</button>
+          <div className="topbar-actions">
+            <Link className="topbar-control notification-tab" href="/travelers#roster-review-queue" aria-label="Open workflow notifications">
+              <Clock3 size={17} />
+              <span>Notifications</span>
+              {typeof notificationCount === "number" && notificationCount > 0 ? <strong>{notificationCount}</strong> : null}
+            </Link>
+            <ThemeToggle />
+            <div className="topbar-profile">
+              <div>
+                <strong>{displayName}</strong>
+                <span>{roleMeta.label}</span>
+              </div>
+            </div>
+          </div>
         </header>
-        {children}
+        <section className="ops-main">
+          {children}
+        </section>
       </section>
     </main>
   );
 }
 
 export function LoginScreen() {
-  const [email, setEmail] = useState(ROLE_ACCOUNTS.agent.email);
+  const [username, setUsername] = useState(ROLE_ACCOUNTS.agent.username);
   const [password, setPassword] = useState(DEFAULT_PASSWORD);
-  const [role, setRole] = useState<CorporateRole>("agent");
   const [status, setStatus] = useState<"idle" | "signing-in" | "error">("idle");
-
-  function chooseRole(nextRole: CorporateRole) {
-    setRole(nextRole);
-    setEmail(ROLE_ACCOUNTS[nextRole].email);
-  }
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
     if (status === "signing-in") return;
     setStatus("signing-in");
     try {
-      const session = await demoLogin(email.trim() || DEFAULT_EMAIL);
+      const session = await demoLogin(ROLE_ACCOUNTS.agent.email || DEFAULT_EMAIL, password, username.trim());
       storeAuthSession(session);
-      window.localStorage.setItem(SELECTED_ROLE_KEY, role);
-      navigateAfterLogin(ROLE_ACCOUNTS[role].path);
+      window.localStorage.setItem(SELECTED_ROLE_KEY, "agent");
+      navigateAfterLogin(ROLE_ACCOUNTS.agent.path);
     } catch {
       setStatus("error");
     }
@@ -513,42 +766,36 @@ export function LoginScreen() {
       <section className="login-panel">
         <div className="login-panel-header">
           <UniproLogo />
-          <ThemeToggle />
         </div>
         <div className="login-title">
-          <h1>Unipro Travel Operations</h1>
-          <p>Corporate travel agents create requests, generate AI plans, track approval status, and finalize reviewed itineraries in one workspace.</p>
+          <h1>AI-assisted corporate travel planning for travel agents.</h1>
+          <div className="login-signal-grid">
+            <Signal icon={CalendarDays} label="Planning only" value="Focus on the best itineraries, faster." />
+            <Signal icon={ShieldCheck} label="Policy aware" value="Automatically checks policy & preferences." />
+            <Signal icon={FileText} label="Form intake" value="Review requests, updates, and registrations." />
+          </div>
+          <p>Unipro Travel Operations helps agents manage corporate travel requests end-to-end with AI assistance, policy exception flags, traveler roster review, and itinerary handoff.</p>
         </div>
-        <div className="login-signal-grid">
-          <Signal icon={Plane} label="Agent" value="Plan & finalize" />
-          <Signal icon={ShieldCheck} label="Admin" value="Policy data" />
-          <Signal icon={FileSpreadsheet} label="Excel" value="Import/export" />
+        <div className="login-illustration" aria-hidden="true">
+          <img src="/login-airport-reference.png" alt="" />
         </div>
       </section>
       <form className="login-card" onSubmit={signIn}>
-        <h2>Sign in</h2>
+        <div className="login-card-title">
+          <h2>Demo Access</h2>
+          <p>Sign in to the travel agent workspace</p>
+        </div>
         <label>
-          <span>Email</span>
-          <input autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+          <span>Username</span>
+          <span className="input-with-icon login-credential-field"><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /><User size={18} /></span>
         </label>
         <label>
           <span>Password</span>
-          <span className="input-with-icon"><KeyRound size={16} /><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></span>
+          <span className="input-with-icon login-credential-field"><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /><Lock size={18} /></span>
         </label>
-        <div className="role-card-grid" aria-label="Role">
-          {(["agent", "admin"] as CorporateRole[]).map((item) => {
-            const Icon = ROLE_ACCOUNTS[item].icon;
-            return (
-            <button className={role === item ? "active" : ""} key={item} type="button" onClick={() => chooseRole(item)}>
-              <Icon size={17} />
-              <strong>{ROLE_ACCOUNTS[item].label}</strong>
-              <span>{ROLE_ACCOUNTS[item].description}</span>
-            </button>
-          )})}
-        </div>
         {status === "error" ? <p className="inline-error">Sign in is unavailable. Please try again after a moment.</p> : null}
         <button className="primary-button" disabled={status === "signing-in"} type="submit">
-          {status === "signing-in" ? "Signing in..." : "Sign in"}
+          {status === "signing-in" ? "Opening workspace..." : <>Continue to workspace <ArrowRight size={19} /></>}
         </button>
       </form>
     </main>
@@ -568,16 +815,23 @@ function Signal({ icon: Icon, label, value }: { icon: LucideIcon; label: string;
 export function TravelerDashboard() {
   const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [workspaceTab, setWorkspaceTab] = useState<"details" | "assistant">("details");
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [showRequestForm, setShowRequestForm] = useState(false);
+  const [workspaceRequestId, setWorkspaceRequestId] = useState("");
+  const [workspaceInitialStep, setWorkspaceInitialStep] = useState<WorkspaceStep>("missing");
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<CorporateTravelRequest["status"] | "all">("all");
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("new_entries");
+  const [createStatus, setCreateStatus] = useState("");
+  const [creatingRequest, setCreatingRequest] = useState(false);
+  const [formUploadFile, setFormUploadFile] = useState<File | null>(null);
+  const [formUploadStatus, setFormUploadStatus] = useState("");
+  const [uploadingForms, setUploadingForms] = useState(false);
+  const [deletingRequestId, setDeletingRequestId] = useState("");
   const dashboardRequests = useMemo(() => buildDashboardRequests(requests), [requests]);
   const filteredDashboardRequests = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return dashboardRequests.filter((request) => {
-      const statusMatches = statusFilter === "all" || request.status === statusFilter;
+      const statusMatches = queueFilterFor(request) === queueFilter;
       const queryMatches = !query || [
         request.id,
         request.travellerName,
@@ -589,28 +843,33 @@ export function TravelerDashboard() {
       ].some((value) => value.toLowerCase().includes(query));
       return statusMatches && queryMatches;
     });
-  }, [dashboardRequests, searchQuery, statusFilter]);
-  const selectedRequest = filteredDashboardRequests.find((request) => request.id === selectedId) || filteredDashboardRequests[0] || null;
+  }, [dashboardRequests, searchQuery, queueFilter]);
+  const selectedRequest = workspaceRequestId ? dashboardRequests.find((request) => request.id === workspaceRequestId) || null : null;
 
   async function refreshRequests() {
     setLoadState("loading");
-    ensureTravelSession()
-      .then(() => listCorporateRequests())
-      .then((items) => {
-        if (items.length) {
-          setRequests(items);
-          setSelectedId((current) => items.some((item) => item.id === current) ? current : items[0].id);
-        } else {
-          setRequests([]);
-          setSelectedId("");
-        }
-        setLoadState("ready");
-      })
-      .catch(() => {
+    try {
+      await ensureTravelSession();
+      const items = await listCorporateRequests();
+      if (items.length) {
+        setRequests(items);
+        setQueueFilter((current) => firstAvailableQueueFilter(items, current));
+        setSelectedId((current) => items.some((item) => item.id === current) ? current : items[0].id);
+        setWorkspaceRequestId((current) => items.some((item) => item.id === current) ? current : "");
+      } else {
         setRequests([]);
         setSelectedId("");
-        setLoadState("error");
-      });
+        setWorkspaceRequestId("");
+      }
+      setLoadState("ready");
+      return items;
+    } catch {
+      setRequests([]);
+      setSelectedId("");
+      setWorkspaceRequestId("");
+      setLoadState("error");
+      return [];
+    }
   }
 
   useEffect(() => {
@@ -622,95 +881,276 @@ export function TravelerDashboard() {
       const exists = current.some((request) => request.id === next.id);
       return exists ? current.map((request) => request.id === next.id ? next : request) : [next, ...current];
     });
+    setQueueFilter(queueFilterFor(next));
     setSelectedId(next.id);
+    setWorkspaceRequestId(next.id);
+  }
+
+  async function markCriticalIssue(id: string, issue: string, status: CorporateTravelRequest["criticalIssueStatus"] = "Urgent") {
+    const saved = await updateCorporateCriticalIssue(id, issue || null, status);
+    replaceRequest(saved);
+    if (saved.criticalIssueStatus === "Urgent") {
+      openWorkspace(saved.id, "flights");
+    }
   }
 
   async function createRequest(payload: CorporateCreateRequest) {
-    const created = await createCorporateRequest(payload);
-    replaceRequest(created);
-    setShowRequestForm(false);
-    setWorkspaceTab("details");
+    setCreatingRequest(true);
+    setCreateStatus("");
+    try {
+      const created = await createCorporateRequest(payload);
+      replaceRequest(created);
+      setShowRequestForm(false);
+    } catch {
+      setCreateStatus("Request could not be created. Check the details and try again.");
+    } finally {
+      setCreatingRequest(false);
+    }
   }
+
+  async function uploadTravelForms() {
+    if (!formUploadFile || uploadingForms) return;
+    setUploadingForms(true);
+    setFormUploadStatus("");
+    try {
+      const result = await uploadCorporateRequests(formUploadFile);
+      await refreshRequests();
+      setWorkspaceRequestId("");
+      setShowRequestForm(false);
+      setFormUploadFile(null);
+      const created = result.createdRequests || result.requests.length;
+      setFormUploadStatus(`${created} request${created === 1 ? "" : "s"} entered intake from ${formUploadFile.name}.`);
+    } catch {
+      setFormUploadStatus("Travel forms could not be uploaded. Check the workbook and try again.");
+    } finally {
+      setUploadingForms(false);
+    }
+  }
+
+  async function deleteRequest(id: string) {
+    const target = requests.find((request) => request.id === id);
+    const confirmed = typeof window === "undefined" || window.confirm(`Delete request for ${target?.travellerName || id}? This cannot be undone.`);
+    if (!confirmed || deletingRequestId) return;
+    setDeletingRequestId(id);
+    setFormUploadStatus("");
+    try {
+      await deleteCorporateRequest(id);
+      setRequests((current) => current.filter((request) => request.id !== id));
+      setSelectedId((current) => current === id ? "" : current);
+      setWorkspaceRequestId((current) => current === id ? "" : current);
+      setFormUploadStatus("Request deleted.");
+    } catch {
+      setFormUploadStatus("Request could not be deleted. Please try again.");
+    } finally {
+      setDeletingRequestId("");
+    }
+  }
+
+  function openWorkspace(id: string, initialStep: WorkspaceStep = "missing") {
+    setSelectedId(id);
+    setWorkspaceRequestId(id);
+    setWorkspaceInitialStep(initialStep);
+    setShowRequestForm(false);
+    setCreateStatus("");
+  }
+
+  function closeWorkspace() {
+    setWorkspaceRequestId("");
+    setWorkspaceInitialStep("missing");
+    setShowRequestForm(false);
+    setCreateStatus("");
+  }
+
+  const activeDashboardRequests = dashboardRequests.filter(isActiveRequest);
+  const stats = {
+    active: activeDashboardRequests.length,
+    approval: activeDashboardRequests.filter((request) => request.approvalStatus === "Required").length,
+    visa: activeDashboardRequests.filter((request) => request.visaStatus !== "clear").length
+  };
+  const headingTitle = showRequestForm ? "New Request" : selectedRequest ? selectedRequest.travellerName : "Travel Operations";
+  const headingDescription = loadState === "loading"
+    ? "Loading travel requests..."
+    : showRequestForm
+      ? "Capture one customer travel request for agent planning."
+      : selectedRequest
+        ? `${routeText(selectedRequest)} · ${formatTicketDateRange(selectedRequest)}`
+        : "Manage ongoing travel requests and operational blocks.";
 
   return (
     <AppShell active="dashboard">
       <section className="page-heading">
         <div>
-          <h1>Agent Operations Dashboard</h1>
-          <p>{loadState === "loading" ? "Loading travel requests..." : "Manage travel requests, plan trips, and collaborate with AI."}</p>
+          <h1>{headingTitle}</h1>
+          <p>{headingDescription}</p>
         </div>
-        <button className="primary-button" type="button" onClick={() => setShowRequestForm(true)}>
-          <Plus size={16} /> New Request
-        </button>
-      </section>
-
-      <section className="agent-operations-grid">
-        <RequestQueue
-          requests={filteredDashboardRequests}
-          selectedId={selectedRequest?.id || selectedId}
-          searchQuery={searchQuery}
-          statusFilter={statusFilter}
-          onOpen={setSelectedId}
-          onRefresh={() => void refreshRequests()}
-          onSearchChange={setSearchQuery}
-          onStatusFilterChange={setStatusFilter}
-        />
-        <section className="agent-workspace-tabs">
-          {showRequestForm ? (
-            <TravelRequestForm onCancel={() => setShowRequestForm(false)} onCreate={(payload) => void createRequest(payload)} />
-          ) : (
+        <div className="heading-actions">
+          {showRequestForm || selectedRequest ? (
+            <button className="secondary-button" type="button" onClick={closeWorkspace}>
+              <ArrowRight className="back-icon" size={16} /> Back to Requests
+            </button>
+          ) : null}
+          {selectedRequest ? (
+            <button className="secondary-button danger-button" type="button" disabled={deletingRequestId === selectedRequest.id} onClick={() => void deleteRequest(selectedRequest.id)}>
+              <Trash2 size={16} /> {deletingRequestId === selectedRequest.id ? "Deleting..." : "Delete Request"}
+            </button>
+          ) : null}
+          {!showRequestForm ? (
             <>
-              <div className="workspace-tabbar" aria-label="Agent workspace tabs">
-                <button className={workspaceTab === "details" ? "active" : ""} type="button" onClick={() => setWorkspaceTab("details")}>
-                  Request Details
-                </button>
-                <button className={workspaceTab === "assistant" ? "active" : ""} type="button" onClick={() => setWorkspaceTab("assistant")}>
-                  AI Planning Assistant
-                </button>
-              </div>
-              {selectedRequest ? (
-                workspaceTab === "details"
-                  ? <RequestDetail request={selectedRequest} onChange={replaceRequest} />
-                  : <AiPlanningAssistant request={selectedRequest} />
-              ) : <section className="empty-panel">{loadState === "error" ? "Request queue is unavailable." : "No live travel requests yet."}</section>}
+              <label className="secondary-button heading-file-upload">
+                <Upload size={16} />
+                <span>{formUploadFile ? formUploadFile.name : "Upload Forms"}</span>
+                <input
+                  aria-label="Upload travel forms"
+                  type="file"
+                  accept=".xlsx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={(event) => {
+                    setFormUploadStatus("");
+                    setFormUploadFile(event.target.files?.[0] || null);
+                  }}
+                />
+              </label>
+              <button className="secondary-button" type="button" disabled={!formUploadFile || uploadingForms} onClick={() => void uploadTravelForms()}>
+                {uploadingForms ? "Importing..." : "Import Forms"}
+              </button>
+              <button className="primary-button" type="button" onClick={() => {
+                setCreateStatus("");
+                setFormUploadStatus("");
+                setShowRequestForm(true);
+              }}>
+                <Plus size={16} /> New Request
+              </button>
             </>
-          )}
-        </section>
+          ) : null}
+        </div>
       </section>
+      {formUploadStatus ? <p className="form-status" role="status">{formUploadStatus}</p> : null}
+
+      {showRequestForm ? (
+        <section className="request-form-page">
+          <TravelRequestForm
+            errorMessage={createStatus}
+            onCancel={closeWorkspace}
+            onCreate={(payload) => void createRequest(payload)}
+            submitting={creatingRequest}
+          />
+        </section>
+      ) : selectedRequest ? (
+        <section className="request-workspace-layout">
+          <section className="selected-request-column">
+            <RequestDetail request={selectedRequest} onChange={replaceRequest} initialStep={workspaceInitialStep} />
+          </section>
+        </section>
+      ) : (
+        <section className="requests-page">
+          <section className="dashboard-metric-grid" aria-label="Request metrics">
+            <article className="dashboard-metric-card">
+              <span>Active Requests</span>
+              <strong>{stats.active}</strong>
+            </article>
+            <article className="dashboard-metric-card">
+              <span>Approval Flags</span>
+              <strong>{stats.approval}</strong>
+            </article>
+            <article className="dashboard-metric-card">
+              <span>Visa Issues</span>
+              <strong>{stats.visa}</strong>
+            </article>
+          </section>
+          <RequestQueue
+            allRequests={dashboardRequests}
+            requests={filteredDashboardRequests}
+            selectedId=""
+            searchQuery={searchQuery}
+            queueFilter={queueFilter}
+            onOpen={openWorkspace}
+            onCriticalIssue={(id, issue, status) => void markCriticalIssue(id, issue, status)}
+            onDelete={(id) => void deleteRequest(id)}
+            deletingId={deletingRequestId}
+            onRefresh={() => void refreshRequests()}
+            onSearchChange={setSearchQuery}
+            onQueueFilterChange={setQueueFilter}
+          />
+          {loadState === "error" ? <section className="empty-panel">Requests are unavailable.</section> : null}
+        </section>
+      )}
     </AppShell>
   );
 }
 
 function RequestQueue({
+  allRequests,
   requests,
   selectedId,
   searchQuery,
-  statusFilter,
+  queueFilter,
   onOpen,
+  onCriticalIssue,
+  onDelete,
+  deletingId,
   onRefresh,
   onSearchChange,
-  onStatusFilterChange
+  onQueueFilterChange
 }: {
+  allRequests: CorporateTravelRequest[];
   requests: CorporateTravelRequest[];
   selectedId: string;
   searchQuery: string;
-  statusFilter: CorporateTravelRequest["status"] | "all";
-  onOpen: (id: string) => void;
+  queueFilter: QueueFilter;
+  onOpen: (id: string, initialStep?: WorkspaceStep) => void;
+  onCriticalIssue: (id: string, issue: string, status?: CorporateTravelRequest["criticalIssueStatus"]) => Promise<void> | void;
+  onDelete: (id: string) => Promise<void> | void;
+  deletingId: string;
   onRefresh: () => void;
   onSearchChange: (value: string) => void;
-  onStatusFilterChange: (value: CorporateTravelRequest["status"] | "all") => void;
+  onQueueFilterChange: (value: QueueFilter) => void;
 }) {
-  const counts = {
-    new: requests.filter((request) => request.status === "new").length,
-    planning: requests.filter((request) => request.status === "planning").length,
-    hold: requests.filter((request) => request.status === "pending_approval" || request.status === "missing_info").length,
-    complete: requests.filter((request) => request.status === "finalized").length
-  };
-  const columns = boardColumnsFor(requests);
+  const [issueStatus, setIssueStatus] = useState("");
+  const [workingIssueId, setWorkingIssueId] = useState("");
+  const filters: Array<{ value: QueueFilter; label: string }> = [
+    { value: "new_entries", label: "New Entries" },
+    { value: "needs_details", label: "Pending Details" },
+    { value: "processing", label: "Processing" },
+    { value: "completed", label: "Completed" }
+  ];
+  const counts = filters.reduce<Record<QueueFilter, number>>((current, filter) => {
+    current[filter.value] = allRequests.filter((request) => queueFilterFor(request) === filter.value).length;
+    return current;
+  }, {
+    new_entries: 0,
+    needs_details: 0,
+    processing: 0,
+    completed: 0
+  });
+  async function markIssue(request: CorporateTravelRequest, issue: string) {
+    if (!issue || workingIssueId) return;
+    setIssueStatus("");
+    setWorkingIssueId(request.id);
+    try {
+      await onCriticalIssue(request.id, issue, "Urgent");
+    } catch {
+      setIssueStatus("Critical issue could not be saved. Please try again.");
+    } finally {
+      setWorkingIssueId("");
+    }
+  }
+
+  async function clearIssue(request: CorporateTravelRequest) {
+    if (workingIssueId) return;
+    setIssueStatus("");
+    setWorkingIssueId(request.id);
+    try {
+      await onCriticalIssue(request.id, "", "None");
+    } catch {
+      setIssueStatus("Critical issue could not be cleared. Please try again.");
+    } finally {
+      setWorkingIssueId("");
+    }
+  }
+
   return (
-    <section className="ops-card queue-card">
+    <section className="ops-card queue-card" aria-label="Requests">
       <div className="card-title-row">
-        <h2>Request Queue</h2>
+        <h2>Requests</h2>
         <div className="queue-tools">
           <label className="queue-search">
             <Search size={15} />
@@ -721,93 +1161,145 @@ function RequestQueue({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </label>
-          <select aria-label="Status filter" value={statusFilter} onChange={(event) => onStatusFilterChange(event.target.value as CorporateTravelRequest["status"] | "all")}>
-            <option value="all">All Status</option>
-            <option value="new">New</option>
-            <option value="planning">Planning</option>
-            <option value="pending_approval">Pending Approval</option>
-            <option value="missing_info">Missing Info</option>
-            <option value="finalized">Finalized</option>
-          </select>
           <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
-        <button className="active" type="button">All <span>{requests.length}</span></button>
-        <button type="button">New <span>{counts.new}</span></button>
-        <button type="button">In Progress <span>{counts.planning}</span></button>
-        <button type="button">On Hold <span>{counts.hold}</span></button>
-        <button type="button">Complete <span>{counts.complete}</span></button>
+        {filters.map((filter) => (
+          <button className={queueFilter === filter.value ? "active" : ""} key={filter.value} type="button" onClick={() => onQueueFilterChange(filter.value)}>
+            {filter.label} <span>{counts[filter.value]}</span>
+          </button>
+        ))}
       </div>
-      <section className="priority-board" aria-label="Priority Board">
-        <div className="board-head">
-          <div>
-            <h2>Priority Board</h2>
-            <p>Workflow stage first, priority and blockers on each request card.</p>
-          </div>
-          <span>{requests.length} live requests</span>
-        </div>
-        {requests.length ? (
-          <div className="board-columns">
-            {columns.map((column) => (
-              <section className="board-column" key={column.key} aria-label={column.title}>
-                <div className="board-column-head">
-                  <h3>{column.title}</h3>
-                  <span>{column.requests.length}</span>
-                </div>
-                <p>{column.description}</p>
-                <div className="request-card-stack">
-                  {column.requests.length ? column.requests.map((request) => (
+      <div className="ticket-table-wrap">
+        <table className="ticket-table">
+          <thead>
+            <tr>
+              <th scope="col">Traveler</th>
+              <th scope="col">Route</th>
+              <th scope="col">Dates</th>
+              <th scope="col">Status</th>
+              <th scope="col">Critical Issue</th>
+              <th scope="col" className="ticket-actions-heading">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {requests.length ? requests.map((request) => (
+              <tr className={selectedId === request.id ? "selected" : ""} key={request.id}>
+                <td>
+                  <div className="ticket-identity">
+                    <strong>{request.travellerName}</strong>
+                    <span className="ticket-meta-line">
+                      <span className="request-card-id">{request.id}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{request.company}</span>
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  <div className="ticket-route-cell">
+                    <span>{request.origin || "Origin pending"}</span>
+                    <ArrowRight size={14} />
+                    <span>{request.destination || "Destination pending"}</span>
+                  </div>
+                </td>
+                <td className="ticket-date-cell">{formatTicketDateRange(request)}</td>
+                <td>
+                  <span className="reason-chip-row">
+                    <StatusPill value={priorityFor(request)} />
+                    {priorityReasons(request).slice(0, 2).map((reason) => <span key={reason}>{reason}</span>)}
+                  </span>
+                </td>
+                <td>
+                  <div className="critical-issue-cell">
+                    {request.criticalIssueStatus === "Urgent" ? (
+                      <>
+                        <StatusPill value="Urgent" />
+                        <span>{request.criticalIssue || "Urgent travel disruption"}</span>
+                        <button className="link-button" type="button" onClick={() => void clearIssue(request)} disabled={workingIssueId === request.id}>
+                          Clear
+                        </button>
+                      </>
+                    ) : (
+                      <span>No active issue</span>
+                    )}
+                    <select
+                      aria-label={`Critical issue for ${request.id}`}
+                      disabled={workingIssueId === request.id}
+                      value=""
+                      onChange={(event) => void markIssue(request, event.target.value)}
+                    >
+                      <option value="">Mark issue</option>
+                      <option value="Flight cancelled - book an alternative from the same origin and adjust hotel dates if needed.">Flight cancelled</option>
+                      <option value="Booked ticket cancellation - recover ticket value and replace the itinerary.">Ticket cancellation</option>
+                      <option value="Itinerary change - rework flights and hotel nights around the updated schedule.">Change itinerary</option>
+                      <option value="Traveler emergency - protect traveler continuity and rebuild the trip around the urgent constraint.">Traveler emergency</option>
+                    </select>
+                  </div>
+                </td>
+                <td className="ticket-action-cell">
+                  <div className="ticket-action-stack">
+                    {request.criticalIssueStatus === "Urgent" ? (
+                      <button
+                        aria-label={`${request.id} Work critical issue`}
+                        className="ticket-action-button urgent"
+                        type="button"
+                        onClick={() => onOpen(request.id, "flights")}
+                      >
+                        Work Issue
+                      </button>
+                    ) : null}
                     <button
-                      className={selectedId === request.id ? "request-board-card selected" : "request-board-card"}
-                      key={request.id}
+                      aria-label={`${request.id} Next: ${nextActionFor(request)}`}
+                      className="ticket-action-button"
                       type="button"
                       onClick={() => onOpen(request.id)}
                     >
-                      <span className={`priority-badge ${priorityFor(request).toLowerCase()}`}>{priorityFor(request)}</span>
-                      <span className="request-card-id">{request.id}</span>
-                      <strong>{request.travellerName}</strong>
-                      <span>{request.company}</span>
-                      <span>{routeText(request)}</span>
-                      <span>{formatDate(request.departDate)} - {formatDate(request.returnDate)}</span>
-                      <span className="request-card-label">Traveller</span>
-                      <span className="request-card-label">Company</span>
-                      <span className="request-card-label">Destination</span>
-                      <span className="request-card-label">Travel dates</span>
-                      <span className="request-card-label">Visa</span>
-                      <span className="request-card-label">Budget</span>
-                      <span className="request-card-label">Approval</span>
-                      <span className="reason-chip-row">
-                        {priorityReasons(request).map((reason) => <span key={reason}>{reason}</span>)}
-                      </span>
-                      {request.missingInformation ? <span className="blocker-note">{request.missingInformation}</span> : null}
-                      <span className="card-next-action">{nextActionFor(request)}</span>
-                      <span className="card-owner">Assigned to travel ops</span>
-                      <span className="card-updated">{updatedAge(request.lastUpdated)}</span>
+                      Next: {nextActionFor(request)}
                     </button>
-                  )) : <span className="empty-column">No requests</span>}
-                </div>
-              </section>
-            ))}
-          </div>
-        ) : <div className="empty-panel">No live travel requests yet.</div>}
-      </section>
+                    <button
+                      aria-label={`Delete request for ${request.travellerName || request.id}`}
+                      className="ticket-action-button delete"
+                      type="button"
+                      disabled={deletingId === request.id}
+                      onClick={() => onDelete(request.id)}
+                    >
+                      <Trash2 size={14} /> {deletingId === request.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )) : (
+              <tr>
+                <td colSpan={6}>
+                  <div className="empty-panel">No matching requests.</div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
       <div className="queue-footer">
         <span>Showing {requests.length ? 1 : 0} to {requests.length} of {requests.length} requests</span>
+        {issueStatus ? <span role="status">{issueStatus}</span> : null}
       </div>
     </section>
   );
 }
 
 function TravelRequestForm({
+  errorMessage = "",
   onCancel,
   onCreate,
+  submitting = false,
   title = "Travel Request Form",
   submitLabel = "Create Request",
   initialValues
 }: {
+  errorMessage?: string;
   onCancel?: () => void;
-  onCreate: (payload: CorporateCreateRequest) => void;
+  onCreate: (payload: CorporateCreateRequest) => void | Promise<void>;
+  submitting?: boolean;
   title?: string;
   submitLabel?: string;
   initialValues?: CorporateCreateRequest;
@@ -816,82 +1308,258 @@ function TravelRequestForm({
     ...EMPTY_FORM,
     ...initialValues
   });
+  const [downloadStatus, setDownloadStatus] = useState("");
+  const [downloadingClientForm, setDownloadingClientForm] = useState(false);
+  const formStatus = errorMessage || downloadStatus;
+  const needsReturnDate = form.includeReturnFlight || form.includeHotel;
+  const needsOrigin = form.includeOutboundFlight || form.includeReturnFlight;
 
   function update<K extends keyof CorporateCreateRequest>(key: K, value: CorporateCreateRequest[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  function toggleOption(key: "preferences" | "specialRequests", value: string) {
+    setForm((current) => {
+      const parts = current[key].split(";").map((part) => part.trim()).filter(Boolean);
+      const exists = parts.includes(value);
+      const next = exists ? parts.filter((part) => part !== value) : [...parts, value];
+      return { ...current, [key]: next.join("; ") };
+    });
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
-    onCreate(form);
+    setDownloadStatus("");
+    void Promise.resolve(onCreate(form)).catch(() => {
+      // Parent screens own the visible error message.
+    });
+  }
+
+  async function downloadClientForm() {
+    setDownloadStatus("");
+    setDownloadingClientForm(true);
+    try {
+      const blob = await downloadClientRequestFormPdf();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "client_travel_request_form.pdf";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setDownloadStatus("Client form PDF could not be downloaded. Please try again.");
+    } finally {
+      setDownloadingClientForm(false);
+    }
   }
 
   return (
     <form className="ops-card request-form" onSubmit={submit}>
       <div className="card-title-row">
         <h2>{title}</h2>
-        {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
+        <div className="button-row compact">
+          <button className="secondary-button" type="button" onClick={() => void downloadClientForm()} disabled={downloadingClientForm}>
+            <FileText size={16} /> {downloadingClientForm ? "Preparing PDF..." : "Client Form PDF"}
+          </button>
+          {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
+        </div>
       </div>
       <div className="form-grid">
         <label><span>Traveller name</span><input value={form.travellerName} onChange={(event) => update("travellerName", event.target.value)} required /></label>
         <label><span>Traveller email</span><input type="email" value={form.travellerEmail} onChange={(event) => update("travellerEmail", event.target.value)} required /></label>
         <label><span>Company</span><input value={form.company} onChange={(event) => update("company", event.target.value)} required /></label>
-        <label><span>Origin</span><input value={form.origin} onChange={(event) => update("origin", event.target.value)} required /></label>
+        <label><span>Origin</span><input value={form.origin} onChange={(event) => update("origin", event.target.value)} required={needsOrigin} /></label>
         <label><span>Destination</span><input value={form.destination} onChange={(event) => update("destination", event.target.value)} required /></label>
         <label><span>Depart date</span><input type="date" value={form.departDate} onChange={(event) => update("departDate", event.target.value)} required /></label>
-        <label><span>Return date</span><input type="date" value={form.returnDate} onChange={(event) => update("returnDate", event.target.value)} required /></label>
+        <label><span>Return date</span><input type="date" value={form.returnDate} onChange={(event) => update("returnDate", event.target.value)} required={needsReturnDate} /></label>
+        <fieldset className="span-2 option-field compact-options">
+          <legend>Trip components</legend>
+          <div className="option-chip-grid">
+            <label className="check-row">
+              <input type="checkbox" checked={form.includeOutboundFlight} onChange={(event) => update("includeOutboundFlight", event.target.checked)} />
+              <span>Outbound flight</span>
+            </label>
+            <label className="check-row">
+              <input type="checkbox" checked={form.includeReturnFlight} onChange={(event) => update("includeReturnFlight", event.target.checked)} />
+              <span>Return flight</span>
+            </label>
+            <label className="check-row">
+              <input type="checkbox" checked={form.includeHotel} onChange={(event) => update("includeHotel", event.target.checked)} />
+              <span>Hotel</span>
+            </label>
+          </div>
+        </fieldset>
         <label><span>Budget</span><input type="number" value={form.budgetAmount} onChange={(event) => update("budgetAmount", Number(event.target.value))} required /></label>
         <label><span>Currency</span><select value={form.budgetCurrency} onChange={(event) => update("budgetCurrency", event.target.value)}><option>INR</option><option>USD</option><option>EUR</option><option>GBP</option></select></label>
         <label className="span-2"><span>Travel purpose</span><textarea value={form.purpose} onChange={(event) => update("purpose", event.target.value)} required /></label>
-        <label className="span-2"><span>Preferences</span><textarea value={form.preferences} onChange={(event) => update("preferences", event.target.value)} /></label>
-        <label className="span-2"><span>Special requests</span><textarea value={form.specialRequests} onChange={(event) => update("specialRequests", event.target.value)} /></label>
+        <fieldset className="span-2 option-field">
+          <legend>Preferences</legend>
+          <div className="option-chip-grid">
+            {PREFERENCE_OPTIONS.map((option) => (
+              <button
+                aria-pressed={form.preferences.split(";").map((part) => part.trim()).includes(option)}
+                className={form.preferences.split(";").map((part) => part.trim()).includes(option) ? "option-chip selected" : "option-chip"}
+                key={option}
+                type="button"
+                onClick={() => toggleOption("preferences", option)}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+          <label><span>Other preference details</span><textarea value={form.preferences} onChange={(event) => update("preferences", event.target.value)} /></label>
+        </fieldset>
+        <fieldset className="span-2 option-field">
+          <legend>Special requests</legend>
+          <div className="option-chip-grid">
+            {SPECIAL_REQUEST_OPTIONS.map((option) => (
+              <button
+                aria-pressed={form.specialRequests.split(";").map((part) => part.trim()).includes(option)}
+                className={form.specialRequests.split(";").map((part) => part.trim()).includes(option) ? "option-chip selected" : "option-chip"}
+                key={option}
+                type="button"
+                onClick={() => toggleOption("specialRequests", option)}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+          <label><span>Other special request details</span><textarea value={form.specialRequests} onChange={(event) => update("specialRequests", event.target.value)} /></label>
+        </fieldset>
       </div>
+      {formStatus ? <p className="form-status" role="status">{formStatus}</p> : null}
       <div className="button-row">
-        <button className="primary-button" type="submit"><ClipboardCheck size={16} /> {submitLabel}</button>
+        <button className="primary-button" type="submit" disabled={submitting}><ClipboardCheck size={16} /> {submitting ? "Creating..." : submitLabel}</button>
       </div>
     </form>
   );
 }
 
-type WorkspaceTab = "overview" | "missing" | "plan" | "policy" | "documents" | "approval" | "activity";
+type WorkspaceStep = "missing" | "flights" | "hotel" | "transfer" | "itinerary" | "client_review" | "approval";
 
-const WORKSPACE_TABS: Array<{ id: WorkspaceTab; label: string }> = [
-  { id: "overview", label: "Overview" },
+const WORKSPACE_STEPS: Array<{ id: WorkspaceStep; label: string }> = [
   { id: "missing", label: "Missing Info" },
-  { id: "plan", label: "Plan" },
-  { id: "policy", label: "Policy & Budget" },
-  { id: "documents", label: "Documents & Visa" },
-  { id: "approval", label: "Approval & Finalize" },
-  { id: "activity", label: "Activity" },
+  { id: "flights", label: "Flights" },
+  { id: "hotel", label: "Hotel" },
+  { id: "transfer", label: "Transfer" },
+  { id: "itinerary", label: "Itinerary" },
+  { id: "client_review", label: "Client Review" },
+  { id: "approval", label: "Approval & Export" },
 ];
 
-function RequestDetail({ request, onChange }: { request: CorporateTravelRequest; onChange: (request: CorporateTravelRequest) => void }) {
+function normalBuilderStep(step: WorkspaceStep | "intake" | "readiness" | "plan" | "chat" | "finalize"): WorkspaceStep {
+  if (step === "intake" || step === "readiness") return "missing";
+  if (step === "plan" || step === "chat") return "flights";
+  if (step === "finalize") return "approval";
+  return step;
+}
+
+function RequestDetail({ request, onChange, initialStep = "missing" }: { request: CorporateTravelRequest; onChange: (request: CorporateTravelRequest) => void; initialStep?: WorkspaceStep }) {
   const [draft, setDraft] = useState(request);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const [activeStep, setActiveStep] = useState<WorkspaceStep>(normalBuilderStep(request.criticalIssueStatus === "Urgent" ? "flights" : initialStep));
   const [statusMessage, setStatusMessage] = useState("");
   const [working, setWorking] = useState(false);
+  const [commandInput, setCommandInput] = useState("");
+  const [guideMessage, setGuideMessage] = useState("");
+  const [helperOpen, setHelperOpen] = useState(false);
+  const [helperMessage, setHelperMessage] = useState("");
+  const [helperSuggestion, setHelperSuggestion] = useState("");
+  const [assistantStatus, setAssistantStatus] = useState<"idle" | "responding">("idle");
   const selectedPlan = draft.recommendedPlans.find((plan) => plan.selected) || draft.recommendedPlans[0];
+  const selectedFlightOffer = draft.flightOffers.find((offer) => offer.id === (draft.selectedFlightOfferId || selectedPlan?.flightOfferId))
+    || draft.flightOffers.find((offer) => offer.selected)
+    || draft.flightOffers[0];
+  const selectedHotelOffer = draft.hotelOffers.find((offer) => offer.id === draft.selectedHotelOfferId)
+    || draft.hotelOffers.find((offer) => offer.selected)
+    || draft.hotelOffers[0];
+  const selectedGroundTransferOffer = draft.groundTransferOffers.find((offer) => offer.id === (draft.selectedGroundTransferOfferId || selectedPlan?.groundTransferOfferId))
+    || draft.groundTransferOffers.find((offer) => offer.selected)
+    || draft.groundTransferOffers[0];
+  const recoveryMode = draft.criticalIssueStatus === "Urgent";
 
   useEffect(() => {
     setDraft(request);
-    setStatusMessage("");
   }, [request]);
+
+  useEffect(() => {
+    setStatusMessage("");
+    setGuideMessage("");
+    setHelperOpen(false);
+    setHelperMessage("");
+    setHelperSuggestion("");
+    setActiveStep(normalBuilderStep(request.criticalIssueStatus === "Urgent" ? "flights" : initialStep));
+  }, [request.id, initialStep]);
 
   function updateDraft<K extends keyof CorporateTravelRequest>(key: K, value: CorporateTravelRequest[K]) {
     setDraft((current) => ({ ...current, [key]: value, lastUpdated: new Date().toISOString() }));
   }
 
-  function updatePlan(id: string, patch: Partial<CorporatePlanOption>) {
+  function corporateUpdatePayloadFromDraft(source: CorporateTravelRequest): CorporateRequestUpdate {
+    return {
+      travellerName: source.travellerName,
+      travellerEmail: source.travellerEmail,
+      aiSummary: source.aiSummary,
+      readinessCheck: source.readinessCheck,
+      company: source.company,
+      origin: source.origin,
+      destination: source.destination,
+      departDate: source.departDate,
+      returnDate: source.returnDate,
+      purpose: source.purpose,
+      preferences: source.preferences,
+      specialRequests: source.specialRequests,
+      budgetAmount: source.budgetAmount,
+      budgetCurrency: source.budgetCurrency,
+      budgetPolicyCheck: source.budgetPolicyCheck,
+      recommendedPlans: source.recommendedPlans,
+      flightOffers: source.flightOffers,
+      selectedFlightOfferId: source.selectedFlightOfferId,
+      hotelOffers: source.hotelOffers,
+      selectedHotelOfferId: source.selectedHotelOfferId,
+      groundTransferOffers: source.groundTransferOffers,
+      selectedGroundTransferOfferId: source.selectedGroundTransferOfferId,
+      missingInformation: source.missingInformation,
+      travellerNationality: source.travellerNationality,
+      customerMessageDraft: source.customerMessageDraft,
+      finalItineraryDraft: source.finalItineraryDraft,
+      status: source.status,
+      budgetStatus: source.budgetStatus,
+      approvalStatus: source.approvalStatus,
+      finalApproved: source.finalApproved
+    };
+  }
+
+  function selectFlightOffer(id: string) {
     setDraft((current) => ({
       ...current,
-      recommendedPlans: current.recommendedPlans.map((plan) => plan.id === id ? { ...plan, ...patch } : plan)
+      selectedFlightOfferId: id,
+      flightOffers: current.flightOffers.map((offer) => ({ ...offer, selected: offer.id === id })),
+      recommendedPlans: current.recommendedPlans.some((plan) => plan.flightOfferId === id)
+        ? current.recommendedPlans.map((plan) => ({ ...plan, selected: plan.flightOfferId === id }))
+        : current.recommendedPlans,
+      finalApproved: false,
+      status: "planning"
     }));
   }
 
-  function selectPlan(id: string) {
+  function selectHotelOffer(id: string) {
     setDraft((current) => ({
       ...current,
-      recommendedPlans: current.recommendedPlans.map((plan) => ({ ...plan, selected: plan.id === id })),
+      selectedHotelOfferId: id,
+      hotelOffers: current.hotelOffers.map((offer) => ({ ...offer, selected: offer.id === id })),
+      finalApproved: false,
+      status: "planning"
+    }));
+  }
+
+  function selectGroundTransferOffer(id: string) {
+    setDraft((current) => ({
+      ...current,
+      selectedGroundTransferOfferId: id,
+      groundTransferOffers: current.groundTransferOffers.map((offer) => ({ ...offer, selected: offer.id === id })),
+      recommendedPlans: current.recommendedPlans.some((plan) => plan.groundTransferOfferId === id)
+        ? current.recommendedPlans.map((plan) => ({ ...plan, selected: plan.groundTransferOfferId === id }))
+        : current.recommendedPlans,
       finalApproved: false,
       status: "planning"
     }));
@@ -911,21 +1579,23 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
     }
   }
 
+  async function runAutomatedPipeline() {
+    setWorking(true);
+    try {
+      const processed = await runCorporateRequestPipeline(draft.id);
+      setDraft(processed);
+      onChange(processed);
+      setStatusMessage(processed.status === "missing_info" ? "Moved to Pending Details." : "Automated pipeline started and client options were prepared.");
+    } catch {
+      setStatusMessage("Automated pipeline is unavailable. Manual planning is still available.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function saveEdits() {
     try {
-      const saved = await updateCorporateRequest(draft.id, {
-        aiSummary: draft.aiSummary,
-        readinessCheck: draft.readinessCheck,
-        budgetPolicyCheck: draft.budgetPolicyCheck,
-        recommendedPlans: draft.recommendedPlans,
-        missingInformation: draft.missingInformation,
-        customerMessageDraft: draft.customerMessageDraft,
-        finalItineraryDraft: draft.finalItineraryDraft,
-        status: draft.status,
-        budgetStatus: draft.budgetStatus,
-        approvalStatus: draft.approvalStatus,
-        finalApproved: draft.finalApproved
-      });
+      const saved = await updateCorporateRequest(draft.id, corporateUpdatePayloadFromDraft(draft));
       setDraft(saved);
       onChange(saved);
       setStatusMessage("Edits saved.");
@@ -935,23 +1605,25 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
     }
   }
 
+  async function sendApproval() {
+    try {
+      const result = await sendCorporateRequestNotification(draft.id, {
+        kind: "approval_request",
+        to: [draft.travellerEmail].filter(Boolean),
+        note: draft.customerMessageDraft || draft.aiSummary,
+        attach_itinerary: false
+      });
+      setStatusMessage(result.safe_message || "Approval request sent.");
+    } catch {
+      setStatusMessage("Approval email could not be sent. Continue with manual follow-up.");
+    }
+  }
+
   async function approveFinal() {
     const approved = { ...draft, finalApproved: true, status: "finalized" as const, approvalStatus: draft.approvalStatus || "Received", lastUpdated: new Date().toISOString() };
     setDraft(approved);
     try {
-      await updateCorporateRequest(draft.id, {
-        aiSummary: approved.aiSummary,
-        readinessCheck: approved.readinessCheck,
-        budgetPolicyCheck: approved.budgetPolicyCheck,
-        recommendedPlans: approved.recommendedPlans,
-        missingInformation: approved.missingInformation,
-        customerMessageDraft: approved.customerMessageDraft,
-        finalItineraryDraft: approved.finalItineraryDraft,
-        status: approved.status,
-        budgetStatus: approved.budgetStatus,
-        approvalStatus: approved.approvalStatus,
-        finalApproved: approved.finalApproved
-      });
+      await updateCorporateRequest(draft.id, corporateUpdatePayloadFromDraft(approved));
       const finalized = await finalizeCorporateRequest(draft.id, {
         agent_reviewed: true,
         approval_status: approved.approvalStatus,
@@ -966,13 +1638,13 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
     }
   }
 
-  async function downloadRequestExcel() {
+  async function downloadRequestPdf() {
     try {
-      const blob = await downloadCorporateRequestExcel(draft.id);
+      const blob = await downloadCorporateRequestPdf(draft.id);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${draft.id}-final-itinerary.xlsx`;
+      link.download = `${draft.id}-final-itinerary.pdf`;
       link.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -980,279 +1652,707 @@ function RequestDetail({ request, onChange }: { request: CorporateTravelRequest;
     }
   }
 
-  return (
-    <section className="ops-card request-detail-card">
-      <div className="detail-panel-head">
-        <h2>Request Details</h2>
-        <StatusPill value="in progress" />
-        <button className="icon-button" aria-label="More request actions" type="button"><MoreVertical size={16} /></button>
-      </div>
-      <div className="request-id-row">
-        <strong>{draft.id}</strong>
-        <button className="copy-button" type="button" aria-label="Copy request id">□</button>
-      </div>
-      <div className="detail-tabs" role="tablist" aria-label="Request workspace tabs">
-        {WORKSPACE_TABS.map((tab) => (
-          <button
-            aria-selected={activeTab === tab.id}
-            className={activeTab === tab.id ? "active" : ""}
-            key={tab.id}
-            role="tab"
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      {statusMessage ? <p className="workspace-status" role="status">{statusMessage}</p> : null}
-
-      {activeTab === "overview" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <div className="detail-summary-grid">
-            <div className="traveler-mini">
-              <span className="avatar large">{initialsFor(draft.travellerName)}</span>
-              <div>
-                <strong>{draft.travellerName}</strong>
-                <span>{draft.purpose || "Business traveler"}</span>
-                <span>{draft.travellerEmail || "traveler email pending"}</span>
-              </div>
-            </div>
-            <dl className="request-meta">
-              <div><dt>Request Type</dt><dd>Business Trip</dd></div>
-              <div><dt>Policy</dt><dd>Global Travel Policy</dd></div>
-              <div><dt>Submitted</dt><dd>{formatUpdated(draft.lastUpdated)}</dd></div>
-              <div><dt>Purpose</dt><dd>{draft.purpose || "Client meetings and product review"}</dd></div>
-              <div><dt>Department</dt><dd>{draft.company || "Company pending"}</dd></div>
-              <div><dt>Trip Window</dt><dd>{formatDate(draft.departDate)} - {formatDate(draft.returnDate)}</dd></div>
-              <div><dt>Next Action</dt><dd>{nextActionFor(draft)}</dd></div>
-            </dl>
-          </div>
-          <div className="detail-info-card blue">
-            <strong>Route</strong>
-            <span>{routeText(draft)}</span>
-            <strong>Dates</strong>
-            <span>{formatDate(draft.departDate)} - {formatDate(draft.returnDate)}</span>
-            <strong>Priority</strong>
-            <span>{priorityFor(draft)}</span>
-            <strong>Assigned</strong>
-            <span>travel ops</span>
-          </div>
-          <div className="detail-info-card amber">
-            <strong>Alerts</strong>
-            <ul>
-              <li>{draft.missingInformation || "No missing information flagged."}</li>
-            </ul>
-          </div>
-          <div className="detail-actions">
-            <button className="primary-button" type="button" onClick={() => void generatePlan()} disabled={working}>{working ? "Planning..." : "Generate AI Plan"}</button>
-            <button className="secondary-button" type="button" onClick={() => setActiveTab("plan")}><Sparkles size={16} /> Review Plan</button>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === "missing" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <EditableSection title="Missing Information" icon={AlertTriangle} value={draft.missingInformation} onChange={(value) => updateDraft("missingInformation", value)} />
-          <EditableSection title="Customer Message Draft" icon={MessageSquare} value={draft.customerMessageDraft} onChange={(value) => updateDraft("customerMessageDraft", value)} />
-          <div className="detail-actions">
-            <button className="secondary-button" type="button" onClick={() => void saveEdits()}><MessageSquare size={16} /> Save Edits</button>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === "plan" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <div className="detail-info-card amber">
-            <strong>Estimated planning draft</strong>
-            <span>Corporate plan values are not live priced or booked. Agent must verify provider prices before sending or finalizing.</span>
-          </div>
-          <div className="detail-summary-grid">
-            <EditableSection title="AI Summary" icon={Sparkles} value={draft.aiSummary} onChange={(value) => updateDraft("aiSummary", value)} />
-            <EditableSection title="Customer Message Draft" icon={MessageSquare} value={draft.customerMessageDraft} onChange={(value) => updateDraft("customerMessageDraft", value)} />
-          </div>
-          {draft.recommendedPlans.length ? (
-            <div className="plan-option-grid">
-              {draft.recommendedPlans.map((plan) => (
-                <article className={plan.selected ? "ops-card selected-plan" : "ops-card"} key={plan.id}>
-                  <div className="card-title-row">
-                    <h3>{plan.name}</h3>
-                    <button className="secondary-button" type="button" onClick={() => selectPlan(plan.id)}>Select</button>
-                  </div>
-                  <p>{plan.flightSummary}</p>
-                  <p>{plan.hotelSummary}</p>
-                  <strong>{formatMoney(plan.totalAmount, plan.currency)}</strong>
-                  <p>{plan.policyFit}</p>
-                  <p>{plan.tradeoffs}</p>
-                </article>
-              ))}
-            </div>
-          ) : <div className="empty-panel">Generate a plan to compare options.</div>}
-          <div className="detail-actions">
-            <button className="primary-button" type="button" onClick={() => void generatePlan()} disabled={working}>{working ? "Planning..." : "Generate AI Plan"}</button>
-            <button className="secondary-button" type="button" onClick={() => void saveEdits()}><MessageSquare size={16} /> Save Edits</button>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === "policy" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <EditableSection title="Budget Policy Check" icon={WalletCards} value={draft.budgetPolicyCheck} onChange={(value) => updateDraft("budgetPolicyCheck", value)} />
-          <div className="detail-info-card blue">
-            <strong>Budget</strong>
-            <span>{formatMoney(draft.budgetAmount, draft.budgetCurrency)}</span>
-            <strong>Budget status</strong>
-            <span>{draft.budgetStatus}</span>
-            <strong>Approval</strong>
-            <span>{draft.approvalStatus}</span>
-            <strong>Selected cost</strong>
-            <span>{selectedPlan ? formatMoney(selectedPlan.totalAmount, selectedPlan.currency) : "No plan selected"}</span>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === "documents" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <EditableSection title="Readiness Check" icon={ShieldCheck} value={draft.readinessCheck} onChange={(value) => updateDraft("readinessCheck", value)} />
-          <div className="detail-info-card amber">
-            <strong>Visa</strong>
-            <span>{draft.visaStatus}</span>
-            <strong>Traveler</strong>
-            <span>{draft.travellerEmail || "traveler email pending"}</span>
-            <strong>Special requests</strong>
-            <span>{draft.specialRequests || "None captured"}</span>
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === "approval" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <EditableSection title="Final Itinerary Preview" icon={ClipboardCheck} value={draft.finalItineraryDraft} onChange={(value) => updateDraft("finalItineraryDraft", value)} />
-          <label className="approval-control">
-            <span>Approval status</span>
-            <select
-              aria-label="Approval status"
-              value={draft.approvalStatus}
-              onChange={(event) => updateDraft("approvalStatus", event.target.value as CorporateTravelRequest["approvalStatus"])}
-            >
-              <option>Not Required</option>
-              <option>Required</option>
-              <option>Received</option>
-              <option>Rejected</option>
-            </select>
-          </label>
-          <div className="detail-actions">
-            <button className="secondary-button" type="button" onClick={() => void saveEdits()}><MessageSquare size={16} /> Save Edits</button>
-            <button className="secondary-button" type="button" onClick={() => void approveFinal()} disabled={draft.approvalStatus === "Rejected"}><ClipboardCheck size={16} /> Generate Final Itinerary</button>
-            {draft.finalApproved || draft.status === "finalized" ? (
-              <button className="secondary-button" type="button" onClick={() => void downloadRequestExcel()}><Download size={16} /> Download Export</button>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
-      {activeTab === "activity" ? (
-        <section className="workspace-panel" role="tabpanel">
-          <div className="detail-info-card blue">
-            <strong>Status</strong>
-            <span>{draft.status.replace(/_/g, " ")}</span>
-            <strong>Last updated</strong>
-            <span>{formatUpdated(draft.lastUpdated)}</span>
-            <strong>Request</strong>
-            <span>{draft.originalRequest || "No original request text captured."}</span>
-            <strong>Booking boundary</strong>
-            <span>Planning only. No booking or payment is created here.</span>
-          </div>
-        </section>
-      ) : null}
-    </section>
-  );
-}
-
-function AiPlanningAssistant({ request }: { request: CorporateTravelRequest }) {
-  const selectedPlan = request.recommendedPlans.find((plan) => plan.selected) || request.recommendedPlans[0];
-  const [chatInput, setChatInput] = useState("");
-  const [assistantStatus, setAssistantStatus] = useState<"idle" | "responding">("idle");
-  const [chatMessages, setChatMessages] = useState<TravelChatLine[]>([
-    { role: "assistant", content: `Hi Jane, I can help you plan the best trip for ${request.travellerName.split(" ")[0] || "this traveler"}. What would you like to work on?` }
-  ]);
-
-  useEffect(() => {
-    setChatMessages([{ role: "assistant", content: `Hi Jane, I can help you plan the best trip for ${request.travellerName.split(" ")[0] || "this traveler"}. What would you like to work on?` }]);
-    setChatInput("");
-  }, [request.id, request.travellerName]);
-
-  async function respond(prompt: string) {
-    const trimmed = prompt.trim();
-    if (!trimmed || assistantStatus === "responding") return;
-    const outboundHistory = chatMessages.slice(-10);
+  async function persistGuideDraft(nextDraft: CorporateTravelRequest, savedStatusMessage: string) {
+    setDraft(nextDraft);
+    onChange(nextDraft);
     setAssistantStatus("responding");
-    setChatMessages((current) => [
-      ...current,
-      { role: "user", content: trimmed }
-    ]);
+    setStatusMessage("Saving guide update...");
     try {
-      const response = await chatWithAssistant({
-        message: trimmed,
-        history: outboundHistory,
-        trip: corporateRequestTripContext(request)
-      });
-      setChatMessages((current) => [...current, { role: "assistant", content: response.message }]);
+      const saved = await updateCorporateRequest(nextDraft.id, corporateUpdatePayloadFromDraft(nextDraft));
+      setDraft(saved);
+      onChange(saved);
+      setStatusMessage(savedStatusMessage);
+      return true;
     } catch {
-      setChatMessages((current) => [...current, { role: "assistant", content: "Planning assistant is unavailable. Continue with manual review." }]);
+      setStatusMessage("Updated locally, but backend save is unavailable. Please retry Update Step.");
+      return false;
     } finally {
       setAssistantStatus("idle");
     }
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!chatInput.trim()) return;
-    void respond(chatInput);
-    setChatInput("");
+  async function submitBuilderCommand(promptOverride?: string) {
+    const prompt = (promptOverride || commandInput).trim();
+    if (!prompt || assistantStatus === "responding") return;
+    const localUpdate = buildNationalityGuideUpdate(prompt)
+      || buildDateGuideUpdate(prompt)
+      || buildTextFieldGuideUpdate(prompt)
+      || buildBudgetGuideUpdate(prompt);
+    if (localUpdate) {
+      setGuideMessage(localUpdate.guideMessage);
+      setCommandInput("");
+      if ("persist" in localUpdate && localUpdate.persist === false) {
+        setStatusMessage(localUpdate.statusMessage);
+        return;
+      }
+      await persistGuideDraft(localUpdate.nextDraft, localUpdate.statusMessage);
+      return;
+    }
+    setAssistantStatus("responding");
+    setStatusMessage("");
+    try {
+      const response = await chatWithAssistant({
+        message: prompt,
+        history: guideMessage ? [{ role: "assistant", content: guideMessage }] : [],
+        trip: corporateRequestTripContext(draft),
+        budget_context: draft.recommendedPlans.map((plan) => ({
+          plan_id: plan.id,
+          name: plan.name,
+          estimated_total: plan.totalAmount,
+          currency: plan.currency,
+          tradeoffs: plan.tradeoffs
+        })),
+        source_context: {
+          request_id: draft.id,
+          active_step: activeStep,
+          uploaded_form_summary: draft.originalRequest,
+          recovery_mode: recoveryMode,
+          critical_issue: recoveryMode ? {
+            status: draft.criticalIssueStatus,
+            issue: draft.criticalIssue || "Urgent travel disruption",
+            recovery_goal: "Protect traveler continuity, find alternative flight from the same origin, and adjust hotels if dates or nights change."
+          } : null,
+          route_constraints: {
+            origin: draft.origin,
+            destination: draft.destination,
+            depart_date: draft.departDate,
+            return_date: draft.returnDate
+          },
+          selected_flight: selectedFlightOffer ? {
+            airline: selectedFlightOffer.airline,
+            outbound: selectedFlightOffer.outbound,
+            return_leg: selectedFlightOffer.returnLeg,
+            total_amount: selectedFlightOffer.totalAmount,
+            currency: selectedFlightOffer.currency,
+            source: selectedFlightOffer.source
+          } : null,
+          selected_hotel: selectedHotelOffer ? {
+            name: selectedHotelOffer.name,
+            address: selectedHotelOffer.address,
+            total_amount: selectedHotelOffer.totalAmount,
+            currency: selectedHotelOffer.currency,
+            provider: selectedHotelOffer.provider
+          } : null
+        }
+      });
+      setGuideMessage(response.message);
+      setCommandInput("");
+    } catch {
+      setGuideMessage(applyStepCommandHint(prompt) || "The guide is unavailable. Continue with the visible cards and fields, then save the request.");
+    } finally {
+      setAssistantStatus("idle");
+    }
+  }
+
+  function buildBudgetGuideUpdate(prompt: string) {
+    const budgetCommand = parseBudgetCommand(prompt);
+    if (!budgetCommand) return null;
+    const selected = draft.recommendedPlans.find((plan) => plan.selected) || draft.recommendedPlans[0];
+    const canCompare = selected && selected.currency === budgetCommand.currency;
+    const budgetStatus: CorporateTravelRequest["budgetStatus"] = canCompare
+      ? selected.totalAmount <= budgetCommand.amount
+        ? "clear"
+        : selected.totalAmount <= budgetCommand.amount * 1.1
+          ? "attention"
+          : "blocked"
+      : draft.budgetStatus;
+    const nextDraft = {
+      ...draft,
+      budgetAmount: budgetCommand.amount,
+      budgetCurrency: budgetCommand.currency,
+      budgetStatus,
+      approvalStatus: budgetStatus === "clear" ? "Not Required" as const : draft.approvalStatus,
+      budgetPolicyCheck: canCompare
+        ? `Budget updated to ${formatMoney(budgetCommand.amount, budgetCommand.currency)}. Selected option is ${formatMoney(selected.totalAmount, selected.currency)}.`
+        : `Budget updated to ${formatMoney(budgetCommand.amount, budgetCommand.currency)}.`,
+      finalApproved: false,
+      lastUpdated: new Date().toISOString()
+    };
+    return {
+      nextDraft,
+      guideMessage: `Budget updated to ${formatMoney(budgetCommand.amount, budgetCommand.currency)} and saved to the request.`,
+      statusMessage: "Budget updated and saved."
+    };
+  }
+
+  function buildNationalityGuideUpdate(prompt: string) {
+    const nationality = parseNationalityCommand(prompt);
+    if (!nationality) return null;
+    const nextDraft = {
+      ...draft,
+      travellerNationality: nationality,
+      missingInformation: removeMissingField(draft.missingInformation, /travell?er_details\.nationality|nationality|citizenship/i),
+      finalApproved: false,
+      lastUpdated: new Date().toISOString()
+    };
+    return {
+      nextDraft,
+      guideMessage: `Traveller nationality updated to ${nationality}. It has been removed from Missing Information and saved to the request.`,
+      statusMessage: "Traveller nationality updated and saved."
+    };
+  }
+
+  function buildDateGuideUpdate(prompt: string) {
+    const command = parseDateCommand(prompt);
+    if (!command) return null;
+    if (command.error) {
+      return {
+        nextDraft: draft,
+        guideMessage: command.error,
+        statusMessage: command.error,
+        persist: false
+      };
+    }
+    const departDate = command.departDate || draft.departDate;
+    const returnDate = command.returnDate || draft.returnDate;
+    const nights = departDate && returnDate ? Math.max(1, Math.round((new Date(`${returnDate}T12:00:00`).getTime() - new Date(`${departDate}T12:00:00`).getTime()) / 86400000)) : undefined;
+    const nextDraft = {
+      ...draft,
+      departDate,
+      returnDate,
+      missingInformation: removeMissingField(
+        removeMissingField(draft.missingInformation, /travel_details\.depart_date|depart(?:ure)? date/i),
+        /travel_details\.return_date|return date/i
+      ),
+      hotelOffers: draft.hotelOffers.map((offer) => ({
+        ...offer,
+        checkIn: departDate || offer.checkIn,
+        checkOut: returnDate || offer.checkOut,
+        nights: nights || offer.nights
+      })),
+      finalApproved: false,
+      status: draft.status === "finalized" ? "planning" as const : draft.status,
+      lastUpdated: new Date().toISOString()
+    };
+    const pieces = [
+      command.departDate ? `depart date ${formatDate(command.departDate)}` : "",
+      command.returnDate ? `return date ${formatDate(command.returnDate)}` : ""
+    ].filter(Boolean).join(" and ");
+    return {
+      nextDraft,
+      guideMessage: `Updated ${pieces} and saved to the request. Existing flight options may need Refresh Options before final export.`,
+      statusMessage: "Travel dates updated and saved."
+    };
+  }
+
+  function buildTextFieldGuideUpdate(prompt: string) {
+    const command = parseTextFieldCommand(prompt);
+    if (!command) return null;
+    const nextDraft = {
+      ...draft,
+      [command.key]: command.value,
+      missingInformation: removeMissingField(draft.missingInformation, new RegExp(command.key.replace(/[A-Z]/g, (letter) => `[_ ]?${letter.toLowerCase()}`), "i")),
+      finalApproved: false,
+      status: draft.status === "finalized" ? "planning" as const : draft.status,
+      lastUpdated: new Date().toISOString()
+    };
+    return {
+      nextDraft,
+      guideMessage: `${EDITABLE_TEXT_FIELD_LABELS[command.key]} updated to ${command.value} and saved to the request.`,
+      statusMessage: `${EDITABLE_TEXT_FIELD_LABELS[command.key]} updated and saved.`
+    };
+  }
+
+  function applyStepCommandHint(prompt: string) {
+    const text = prompt.toLowerCase();
+    if (activeStep === "flights" && draft.flightOffers.length > 1 && (text.includes("fast") || text.includes("arrive") || text.includes("before") || text.includes("avoid"))) {
+      const preferred = draft.flightOffers.find((offer) => /fast|direct|1 stop|arrival|recovery/i.test(`${offer.summary} ${offer.notes.join(" ")}`)) || draft.flightOffers[0];
+      selectFlightOffer(preferred.id);
+    }
+    if (activeStep === "hotel" && draft.hotelOffers.length > 1 && (text.includes("office") || text.includes("client") || text.includes("near"))) {
+      const preferred = draft.hotelOffers.find((offer) => /office|business|city|center|centre/i.test(`${offer.name} ${offer.summary} ${offer.address || ""}`)) || draft.hotelOffers[0];
+      selectHotelOffer(preferred.id);
+    }
+    if (activeStep === "missing") {
+      updateDraft("missingInformation", [draft.missingInformation, `Agent note: ${prompt}`].filter(Boolean).join("\n"));
+    }
+    return "";
+  }
+
+  function explainCurrentStep() {
+    setHelperMessage(helperExplanation(activeStep, draft, selectedFlightOffer, selectedHotelOffer));
+    setHelperSuggestion(helperSuggestionFor(activeStep, draft));
+    setHelperOpen(true);
+  }
+
+  async function applyHelperSuggestion() {
+    if (!helperSuggestion) return;
+    await submitBuilderCommand(helperSuggestion);
+    setHelperOpen(false);
+    setStatusMessage("Helper suggestion applied to the current step.");
+  }
+
+  function goNext() {
+    if (activeStep === "missing") setActiveStep("flights");
+    else if (activeStep === "flights") setActiveStep("hotel");
+    else if (activeStep === "hotel") setActiveStep("transfer");
+    else if (activeStep === "transfer") setActiveStep("itinerary");
+    else if (activeStep === "itinerary") setActiveStep("client_review");
+    else if (activeStep === "client_review") setActiveStep("approval");
   }
 
   return (
-    <aside className="ops-card ai-assistant-card" aria-label="AI Planning Assistant">
-      <div className="assistant-head">
+    <section className="ops-card request-detail-card">
+      <div className="selected-trip-hero">
         <div>
-          <h2>AI Planning Assistant <span>Beta</span></h2>
+          <h2>{draft.travellerName}</h2>
+          <span className="request-card-id">{draft.id}</span>
+          <p>{draft.company} · {draft.purpose || "Business travel"}</p>
+          <strong>{routeText(draft)}</strong>
+          <span>{formatDate(draft.departDate)} - {formatDate(draft.returnDate)} · Budget {formatMoney(draft.budgetAmount, draft.budgetCurrency)}</span>
+        </div>
+        <div>
+          <StatusPill value={draft.status} />
+          <strong>Next: {nextActionFor(draft)}</strong>
         </div>
       </div>
-      <div className="assistant-suggestions">
-        <p>Suggested actions</p>
-        {[
-          `Create a cheaper option for ${routeText(request)}`,
-          `Keep this within ${formatMoney(request.budgetAmount, request.budgetCurrency)}`,
-          `Find a hotel closer to ${request.destination || "the meeting location"}`,
-          "Check visa & entry requirements",
-          "Compare policy-compliant options"
-        ].map((prompt) => (
-          <button key={prompt} type="button" onClick={() => void respond(prompt)} disabled={assistantStatus === "responding"}><Plane size={15} /> {prompt}<span>›</span></button>
+      {draft.criticalIssueStatus === "Urgent" ? (
+        <div className="critical-issue-banner" role="status">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>Critical issue active</strong>
+            <span>{draft.criticalIssue || "Urgent travel disruption"}</span>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => setActiveStep("flights")}>Open Recovery Step</button>
+        </div>
+      ) : null}
+      <div className="builder-stepper" aria-label="Guided itinerary steps">
+        {WORKSPACE_STEPS.map((step, index) => (
+          <button
+            aria-current={activeStep === step.id ? "step" : undefined}
+            className={activeStep === step.id ? "active" : ""}
+            key={step.id}
+            type="button"
+            onClick={() => setActiveStep(step.id)}
+          >
+            <span>{index + 1}</span>{step.label}
+          </button>
         ))}
       </div>
-      <div className="agent-chat-feed assistant-feed" aria-live="polite">
-        {chatMessages.map((message, index) => (
-          <div className={`agent-chat-line ${message.role}`} key={`${message.role}-${index}`}>
-            <p>{message.content}</p>
+      {statusMessage ? <p className="workspace-status" role="status">{statusMessage}</p> : null}
+
+      <section className="guided-builder">
+        <aside className="builder-summary-rail" aria-label="Request context">
+          <BuilderSummary request={draft} selectedFlight={selectedFlightOffer} selectedHotel={selectedHotelOffer} selectedTransfer={selectedGroundTransferOffer} />
+        </aside>
+        <main className="builder-main-panel">
+          <BuilderGuide
+            activeStep={activeStep}
+            guideMessage={guideMessage}
+            request={draft}
+            recoveryMode={recoveryMode}
+            selectedFlight={selectedFlightOffer}
+            selectedHotel={selectedHotelOffer}
+          />
+          <BuilderCommand
+            activeStep={activeStep}
+            assistantStatus={assistantStatus}
+            commandInput={commandInput}
+            onChange={setCommandInput}
+            onHelp={explainCurrentStep}
+            onSubmit={() => void submitBuilderCommand()}
+          />
+          {activeStep === "missing" ? (
+            <section className="builder-step-panel" aria-label="Missing information">
+              <EditableSection title="Missing Information" icon={AlertTriangle} value={draft.missingInformation} onChange={(value) => updateDraft("missingInformation", value)} />
+              <EditableSection title="Readiness Check" icon={ShieldCheck} value={draft.readinessCheck} onChange={(value) => updateDraft("readinessCheck", value)} />
+              <EditableSection title="Customer Message Draft" icon={MessageSquare} value={draft.customerMessageDraft} onChange={(value) => updateDraft("customerMessageDraft", value)} />
+            </section>
+          ) : null}
+          {activeStep === "flights" ? (
+            <section className="builder-step-panel" aria-label="Flight options">
+              {draft.flightOffers.length ? (
+                <FlightOfferSelector
+                  offers={draft.flightOffers}
+                  selectedId={selectedFlightOffer?.id || draft.selectedFlightOfferId || draft.flightOffers[0].id}
+                  recommendation={selectedPlan}
+                  recoveryMode={recoveryMode}
+                  onSelect={selectFlightOffer}
+                />
+              ) : (
+                <div className="empty-panel">Generate a plan to load Duffel or planning flight options.</div>
+              )}
+              <PlanSummaryStrip plan={selectedPlan} />
+            </section>
+          ) : null}
+          {activeStep === "hotel" ? (
+            <section className="builder-step-panel" aria-label="Hotel options">
+              {draft.hotelOffers.length ? (
+                <HotelOfferSelector
+                  offers={draft.hotelOffers}
+                  selectedId={selectedHotelOffer?.id || draft.selectedHotelOfferId || draft.hotelOffers[0].id}
+                  recoveryMode={recoveryMode}
+                  onSelect={selectHotelOffer}
+                />
+              ) : (
+                <div className="empty-panel">Generate a plan to load Booking.com or planning hotel options.</div>
+              )}
+              <PlanSummaryStrip plan={selectedPlan} />
+            </section>
+          ) : null}
+          {activeStep === "transfer" ? (
+            <section className="builder-step-panel" aria-label="Airport transfer options">
+              {draft.groundTransferOffers.length ? (
+                <GroundTransferSelector
+                  offers={draft.groundTransferOffers}
+                  selectedId={selectedGroundTransferOffer?.id || draft.selectedGroundTransferOfferId || draft.groundTransferOffers[0].id}
+                  onSelect={selectGroundTransferOffer}
+                />
+              ) : (
+                <div className="empty-panel">Generate a plan to load planning airport transfer options.</div>
+              )}
+              <PlanSummaryStrip plan={selectedPlan} />
+            </section>
+          ) : null}
+          {activeStep === "itinerary" ? (
+            <section className="builder-step-panel" aria-label="Itinerary draft">
+              <EditableSection title="AI Summary" icon={Sparkles} value={draft.aiSummary} onChange={(value) => updateDraft("aiSummary", value)} />
+              <EditableSection title="Final Itinerary Preview" icon={ClipboardCheck} value={draft.finalItineraryDraft} onChange={(value) => updateDraft("finalItineraryDraft", value)} />
+            </section>
+          ) : null}
+          {activeStep === "client_review" ? (
+            <ClientReviewWorkspace request={draft} />
+          ) : null}
+          {activeStep === "approval" ? (
+            <section className="builder-step-panel" aria-label="Approval and export">
+              <EditableSection title="Budget Policy Check" icon={WalletCards} value={draft.budgetPolicyCheck} onChange={(value) => updateDraft("budgetPolicyCheck", value)} />
+              <div className="detail-info-card blue">
+                <strong>Budget</strong>
+                <span>{formatMoney(draft.budgetAmount, draft.budgetCurrency)}</span>
+                <strong>Budget status</strong>
+                <span>{draft.budgetStatus}</span>
+                <strong>Approval</strong>
+                <span>{draft.approvalStatus}</span>
+                <strong>Selected cost</strong>
+                <span>{selectedPlan ? formatMoney(selectedPlan.totalAmount, selectedPlan.currency) : "No plan selected"}</span>
+              </div>
+              <label className="approval-control">
+                <span>Approved budget</span>
+                <input
+                  aria-label="Approved budget"
+                  min={1}
+                  type="number"
+                  value={draft.budgetAmount}
+                  onChange={(event) => updateDraft("budgetAmount", Number(event.target.value))}
+                />
+              </label>
+              <label className="approval-control">
+                <span>Budget currency</span>
+                <select
+                  aria-label="Budget currency"
+                  value={draft.budgetCurrency}
+                  onChange={(event) => updateDraft("budgetCurrency", event.target.value)}
+                >
+                  <option>INR</option>
+                  <option>USD</option>
+                  <option>EUR</option>
+                  <option>GBP</option>
+                </select>
+              </label>
+              <label className="approval-control">
+                <span>Approval status</span>
+                <select
+                  aria-label="Approval status"
+                  value={draft.approvalStatus}
+                  onChange={(event) => updateDraft("approvalStatus", event.target.value as CorporateTravelRequest["approvalStatus"])}
+                >
+                  <option>Not Required</option>
+                  <option>Required</option>
+                  <option>Received</option>
+                  <option>Rejected</option>
+                </select>
+              </label>
+            </section>
+          ) : null}
+          <div className="builder-footer-actions">
+            <button className="secondary-button" type="button" onClick={() => void generatePlan()} disabled={working}>
+              <Sparkles size={16} /> {working ? "Planning..." : draft.flightOffers.length ? "Refresh Options" : "Generate Options"}
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void runAutomatedPipeline()} disabled={working}>
+              <Send size={16} /> Run Pipeline
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void saveEdits()}><MessageSquare size={16} /> Save</button>
+            {activeStep !== "approval" ? (
+            <button className="primary-button" type="button" onClick={goNext} disabled={(activeStep === "flights" && !selectedFlightOffer) || (activeStep === "transfer" && !selectedGroundTransferOffer)}>
+                Next: {nextBuilderLabel(activeStep)} <ArrowRight size={16} />
+              </button>
+            ) : (
+              <>
+                <button className="secondary-button" type="button" onClick={() => void sendApproval()} disabled={draft.approvalStatus !== "Required"}><Send size={16} /> Send Approval</button>
+                <button className="secondary-button" type="button" onClick={() => void approveFinal()} disabled={draft.approvalStatus === "Rejected"}><ClipboardCheck size={16} /> Generate Final Itinerary</button>
+                {draft.finalApproved || draft.status === "finalized" ? (
+                  <button className="secondary-button" type="button" onClick={() => void downloadRequestPdf()}><Download size={16} /> Download PDF</button>
+                ) : null}
+              </>
+            )}
           </div>
-        ))}
-        {selectedPlan ? (
-          <div className="flight-result-card">
-            <div><strong>{selectedPlan.name}</strong><StatusPill value="selected option" /></div>
-            <div className="flight-times"><span>{request.origin || "Origin pending"}</span><span>{request.destination || "Destination pending"}</span></div>
-            <span>{selectedPlan.flightSummary}</span>
-            <strong>{formatMoney(selectedPlan.totalAmount, selectedPlan.currency)}</strong>
+        </main>
+      </section>
+      {helperOpen ? (
+        <HelperDrawer
+          message={helperMessage}
+          suggestion={helperSuggestion}
+          onApply={() => void applyHelperSuggestion()}
+          onClose={() => setHelperOpen(false)}
+        />
+      ) : null}
+
+    </section>
+  );
+}
+
+function BuilderSummary({
+  request,
+  selectedFlight,
+  selectedHotel,
+  selectedTransfer
+}: {
+  request: CorporateTravelRequest;
+  selectedFlight?: CorporateFlightOffer;
+  selectedHotel?: CorporateHotelOffer;
+  selectedTransfer?: CorporateGroundTransferOffer;
+}) {
+  return (
+    <div className="builder-summary-stack">
+      <section>
+        <p className="eyebrow">Request Context</p>
+        <h3>{request.purpose || "Business trip"}</h3>
+        <p>{routeText(request)}</p>
+        <p>{formatDate(request.departDate)} - {formatDate(request.returnDate)}</p>
+        <p>Budget {formatMoney(request.budgetAmount, request.budgetCurrency)}</p>
+      </section>
+      <section>
+        <p className="eyebrow">Data Loaded</p>
+        <p>{request.originalRequest ? "Travel form loaded" : "Travel form pending"}</p>
+        <p>{compactPreferenceDisplay(request.preferences) || "Traveler preferences pending"}</p>
+        <p>{compactReadinessDisplay(request.readinessCheck)}</p>
+      </section>
+      <section>
+        <p className="eyebrow">Selected So Far</p>
+        <p><strong>Flight:</strong> {selectedFlight ? selectedFlight.airline : "Not selected"}</p>
+        <p><strong>Hotel:</strong> {selectedHotel ? selectedHotel.name : "Pending"}</p>
+        <p><strong>Transfer:</strong> {selectedTransfer ? selectedTransfer.vehicleType || selectedTransfer.serviceType : "Pending"}</p>
+        <p><strong>Approval:</strong> {request.approvalStatus}</p>
+      </section>
+    </div>
+  );
+}
+
+function compactPreferenceDisplay(value: string) {
+  const seen = new Set<string>();
+  return value
+    .split(/;|\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 4)
+    .join("; ");
+}
+
+function compactReadinessDisplay(value: string) {
+  if (!value.trim()) return "Readiness not generated";
+  const field = (label: "Passport" | "Visa" | "Transit") => {
+    const match = value.match(new RegExp(`${label}:\\s*([^\\n]*?)(?=\\s+(?:Passport|Visa|Transit):|\\n|$)`, "i"));
+    return (match?.[1] || "Needs Review")
+      .replace(/\b(Passport|Visa|Transit):\s*/gi, "")
+      .split(/\s{2,}|\.|;/)[0]
+      .trim()
+      .slice(0, 80) || "Needs Review";
+  };
+  return `Passport: ${field("Passport")} · Visa: ${field("Visa")} · Transit: ${field("Transit")}`;
+}
+
+function BuilderGuide({
+  activeStep,
+  guideMessage,
+  request,
+  recoveryMode,
+  selectedFlight,
+  selectedHotel
+}: {
+  activeStep: WorkspaceStep;
+  guideMessage: string;
+  request: CorporateTravelRequest;
+  recoveryMode: boolean;
+  selectedFlight?: CorporateFlightOffer;
+  selectedHotel?: CorporateHotelOffer;
+}) {
+  const titleByStep: Record<WorkspaceStep, string> = {
+    missing: "Complete the missing trip context",
+    flights: recoveryMode ? "Choose the recovery flight" : "Choose the flight option",
+    hotel: "Choose the hotel option",
+    transfer: "Choose the airport transfer",
+    itinerary: "Review the itinerary draft",
+    client_review: "Track client review",
+    approval: "Complete approval and export"
+  };
+  const message = guideMessage || defaultGuideMessage(activeStep, request, recoveryMode, selectedFlight, selectedHotel);
+  return (
+    <section className="builder-guide" aria-live="polite">
+      <span className="builder-guide-avatar">AI</span>
+      <div>
+        <h3>{titleByStep[activeStep]}</h3>
+        <p>{message}</p>
+      </div>
+    </section>
+  );
+}
+
+function BuilderCommand({
+  activeStep,
+  assistantStatus,
+  commandInput,
+  onChange,
+  onHelp,
+  onSubmit
+}: {
+  activeStep: WorkspaceStep;
+  assistantStatus: "idle" | "responding";
+  commandInput: string;
+  onChange: (value: string) => void;
+  onHelp: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <form className="builder-command-row" onSubmit={(event) => {
+      event.preventDefault();
+      onSubmit();
+    }}>
+      <input
+        aria-label={`Guide command for ${WORKSPACE_STEPS.find((step) => step.id === activeStep)?.label || "current step"}`}
+        value={commandInput}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={commandPlaceholder(activeStep)}
+      />
+      <button className="secondary-button" type="button" onClick={onHelp}><MessageSquare size={16} /> Help me understand</button>
+      <button className="primary-button" type="submit" disabled={assistantStatus === "responding"}>
+        {assistantStatus === "responding" ? "Updating..." : "Update Step"}
+      </button>
+    </form>
+  );
+}
+
+function HelperDrawer({
+  message,
+  suggestion,
+  onApply,
+  onClose
+}: {
+  message: string;
+  suggestion: string;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="helper-drawer" role="dialog" aria-label="Helper explanation">
+      <div className="helper-drawer-card">
+        <div className="card-title-row">
+          <h3><MessageSquare size={17} /> Helper</h3>
+          <button className="secondary-button" type="button" onClick={onClose}>Close</button>
+        </div>
+        <p>{message}</p>
+        {suggestion ? (
+          <div className="helper-suggestion">
+            <strong>Suggested update</strong>
+            <p>{suggestion}</p>
+            <button className="primary-button" type="button" onClick={onApply}>Apply to itinerary</button>
           </div>
         ) : null}
       </div>
-      <form className="chat-form" onSubmit={submit}>
-        <input aria-label="Chat message" value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask anything about this trip..." />
-        <button className="icon-button" type="submit" aria-label="Send" disabled={assistantStatus === "responding"}><Send size={16} /></button>
-      </form>
-      <small>AI responses may be inaccurate. Verify important information.</small>
-    </aside>
+    </div>
   );
+}
+
+function PlanSummaryStrip({ plan }: { plan?: CorporatePlanOption }) {
+  if (!plan) return null;
+  return (
+    <div className="ai-recommendation-strip">
+      <Sparkles size={16} />
+      <div>
+        <strong>{plan.name}</strong>
+        <span>{plan.policyFit}</span>
+      </div>
+      <p>{plan.tradeoffs || plan.flightSummary || plan.hotelSummary}</p>
+    </div>
+  );
+}
+
+function nextBuilderLabel(step: WorkspaceStep) {
+  if (step === "missing") return "Select Flight";
+  if (step === "flights") return "Select Hotel";
+  if (step === "hotel") return "Select Transfer";
+  if (step === "transfer") return "Review Itinerary";
+  if (step === "itinerary") return "Client Review";
+  if (step === "client_review") return "Approval & Export";
+  return "Done";
+}
+
+function commandPlaceholder(step: WorkspaceStep) {
+  if (step === "missing") return "Add a missing detail, e.g. passport expiry is valid until 2030...";
+  if (step === "flights") return "Type: arrive before 11am, avoid overnight layover, fastest recovery...";
+  if (step === "hotel") return "Type: hotel near client office, refundable, 4 star, adjust dates...";
+  if (step === "transfer") return "Type: airport pickup, executive car, extra luggage, meet-and-greet...";
+  if (step === "itinerary") return "Type: add vegetarian meal note, explain disruption, shorten traveler message...";
+  if (step === "client_review") return "Type: summarize the latest client review status or requested edits...";
+  return "Type: explain approval reason, mark approval received, prepare final export...";
+}
+
+function defaultGuideMessage(
+  step: WorkspaceStep,
+  request: CorporateTravelRequest,
+  recoveryMode: boolean,
+  selectedFlight?: CorporateFlightOffer,
+  selectedHotel?: CorporateHotelOffer
+) {
+  if (step === "missing") return request.missingInformation || "Review missing data from the uploaded form before generating options.";
+  if (step === "flights") {
+    return recoveryMode
+      ? "This is a recovery workflow. Pick a same-origin replacement first, then we will adjust hotels and the traveler update."
+      : "Pick the flight that best balances policy, schedule, and budget. You can type constraints to update the visible options.";
+  }
+  if (step === "hotel") return selectedFlight ? `Flight selected: ${selectedFlight.airline}. Now choose a hotel that fits the arrival timing and company policy.` : "Select a flight first, then choose the hotel.";
+  if (step === "transfer") return "Choose the airport pickup option that fits the arrival timing, passenger count, and baggage needs.";
+  if (step === "itinerary") return selectedHotel ? `Hotel selected: ${selectedHotel.name}. Review the traveler-ready itinerary before approval.` : "Review the itinerary and add any traveler-facing notes.";
+  if (step === "client_review") return request.clientReview ? `Client review is ${request.clientReview.status}. Round ${request.clientReview.revisionRound}.` : "Run the pipeline to send the signed client review dashboard link.";
+  return "Confirm the approval posture, generate the final itinerary, and export only after agent review.";
+}
+
+function helperExplanation(
+  step: WorkspaceStep,
+  request: CorporateTravelRequest,
+  selectedFlight?: CorporateFlightOffer,
+  selectedHotel?: CorporateHotelOffer
+) {
+  if (step === "missing") return "This step collects blockers before options are trusted. Saving here updates the same request record used by the later flight, hotel, itinerary, and approval steps.";
+  if (step === "flights") return selectedFlight
+    ? `${selectedFlight.airline} is selected. The card shows provider, timings, cost, source, and whether it is a recovery option. No ticket is booked from this screen.`
+    : "Select a flight card to make it the active option for hotel planning and itinerary drafting.";
+  if (step === "hotel") return selectedHotel
+    ? `${selectedHotel.name} is selected. Hotel selection updates the itinerary context but does not create a booking.`
+    : "Hotel cards use Booking.com data when connected or stable planning images when provider photos are missing.";
+  if (step === "transfer") return "Transfer cards use varied planning estimates for the POC. Selecting one does not create a transfer order.";
+  if (step === "itinerary") return "This is the traveler-facing draft. You can edit it directly or ask the guide to rewrite the current draft.";
+  if (step === "client_review") return "This tab tracks the signed dashboard link, client approval, edit requests, and revision history for the traveler-facing review flow.";
+  return request.approvalStatus === "Required"
+    ? "Approval is required before final export. Mark approval as received only after the manager has approved the itinerary."
+    : "Approval is not currently required. Final export is still gated by agent review.";
+}
+
+function helperSuggestionFor(step: WorkspaceStep, request: CorporateTravelRequest) {
+  if (step === "missing") return "Add the latest missing traveler detail to the request notes and continue to flight selection.";
+  if (step === "flights") return request.criticalIssueStatus === "Urgent"
+    ? "Prioritize the fastest same-origin recovery flight and explain hotel impact after selection."
+    : "Rank the visible flights by policy fit, arrival timing, and total cost.";
+  if (step === "hotel") return "Prioritize hotels near the client office with refundable terms and policy-fit nightly cost.";
+  if (step === "transfer") return "Prioritize airport pickup with clear pickup timing, passenger fit, and baggage buffer.";
+  if (step === "itinerary") return "Rewrite the itinerary so it clearly states selected flight, selected hotel, pending approval, and no booking confirmation.";
+  if (step === "client_review") return "Summarize the current client review state and next action for the agent.";
+  return "Summarize why approval is or is not required before final export.";
 }
 
 function EditableSection({ title, icon: Icon, value, onChange }: { title: string; icon: LucideIcon; value: string; onChange: (value: string) => void }) {
@@ -1266,8 +2366,545 @@ function EditableSection({ title, icon: Icon, value, onChange }: { title: string
   );
 }
 
+function FlightOfferSelector({
+  offers,
+  selectedId,
+  recommendation,
+  recoveryMode = false,
+  onSelect
+}: {
+  offers: CorporateFlightOffer[];
+  selectedId: string;
+  recommendation?: CorporatePlanOption;
+  recoveryMode?: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const selectedOffer = offers.find((offer) => offer.id === selectedId) || offers[0];
+
+  return (
+    <section className="flight-offer-section">
+      <div className="card-title-row">
+        <h3><Plane size={17} /> Select Airline</h3>
+        <StatusPill value={offers.some((offer) => offer.source === "duffel") ? "Live Provider Options" : "AI Ranked Options"} />
+      </div>
+      <div className="flight-offer-grid">
+        {offers.map((offer) => (
+          <article className={offer.id === selectedId ? "flight-offer-card selected" : "flight-offer-card"} key={offer.id}>
+            <img className="offer-card-image" src={flightImageFor(offer, recoveryMode)} alt={`${offer.airline} flight visual`} />
+            <div className="card-title-row">
+              <h4>{offer.airline}</h4>
+              <button className="secondary-button" type="button" onClick={() => onSelect(offer.id)}>
+                {offer.id === selectedId ? "Selected" : "Select Flight"}
+              </button>
+            </div>
+            <div className="offer-card-badges">
+              <StatusPill value={offer.source === "duffel" ? "Live Duffel" : "Planning option"} />
+              {recoveryMode ? <StatusPill value="Recovery" /> : null}
+            </div>
+            <strong>{formatMoney(offer.totalAmount, offer.currency)}</strong>
+            <p>{offer.outbound}</p>
+            {offer.returnLeg ? <p>{offer.returnLeg}</p> : null}
+            <small>{offer.provider}</small>
+            {offer.expiresAt ? <small>Offer expires {offer.expiresAt}</small> : null}
+          </article>
+        ))}
+      </div>
+      {recommendation ? (
+        <div className="ai-recommendation-strip">
+          <Sparkles size={16} />
+          <div>
+            <strong>AI recommendation</strong>
+            <span>{recommendation.name}: {selectedOffer?.airline || recommendation.flightSummary} · {recommendation.policyFit}</span>
+          </div>
+          <p>{recommendation.tradeoffs}</p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function HotelOfferSelector({
+  offers,
+  selectedId,
+  recoveryMode = false,
+  onSelect
+}: {
+  offers: CorporateHotelOffer[];
+  selectedId: string;
+  recoveryMode?: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="flight-offer-section">
+      <div className="card-title-row">
+        <h3><Building2 size={17} /> Select Hotel</h3>
+        <StatusPill value={offers.some((offer) => offer.source === "booking") ? "Booking.com Options" : "Planning Options"} />
+      </div>
+      <div className="flight-offer-grid">
+        {offers.map((offer) => (
+          <article className={offer.id === selectedId ? "flight-offer-card hotel-offer-card selected" : "flight-offer-card hotel-offer-card"} key={offer.id}>
+            <img className="offer-card-image" src={hotelImageFor(offer)} alt={`${offer.name} hotel visual`} />
+            <div className="card-title-row">
+              <h4>{offer.name}</h4>
+              <button className="secondary-button" type="button" onClick={() => onSelect(offer.id)}>
+                {offer.id === selectedId ? "Selected" : "Select Hotel"}
+              </button>
+            </div>
+            <div className="offer-card-badges">
+              <StatusPill value={offer.source === "booking" ? "Live hotel" : "Planning hotel"} />
+              {recoveryMode ? <StatusPill value="Dates checked" /> : null}
+            </div>
+            <strong>{formatMoney(offer.totalAmount, offer.currency)}</strong>
+            <p>{offer.summary}</p>
+            {offer.address ? <p>{offer.address}</p> : null}
+            <small>{offer.starRating ? `${offer.starRating}-star · ` : ""}{offer.nights} night{offer.nights === 1 ? "" : "s"} · {offer.rooms} room · {offer.guests} guest{offer.guests === 1 ? "" : "s"}</small>
+            <small>{offer.provider}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function GroundTransferSelector({
+  offers,
+  selectedId,
+  onSelect
+}: {
+  offers: CorporateGroundTransferOffer[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="flight-offer-section">
+      <div className="card-title-row">
+        <h3><Car size={17} /> Select Airport Transfer</h3>
+        <StatusPill value="Planning Options" />
+      </div>
+      <div className="flight-offer-grid">
+        {offers.map((offer) => (
+          <article className={offer.id === selectedId ? "flight-offer-card selected" : "flight-offer-card"} key={offer.id}>
+            <div className="card-title-row">
+              <h4>{offer.vehicleType || offer.serviceType}</h4>
+              <button className="secondary-button" type="button" onClick={() => onSelect(offer.id)}>
+                {offer.id === selectedId ? "Selected" : "Select Transfer"}
+              </button>
+            </div>
+            <div className="offer-card-badges">
+              <StatusPill value="Planning transfer" />
+              <StatusPill value={offer.serviceType} />
+            </div>
+            <strong>{formatMoney(offer.totalAmount, offer.currency)}</strong>
+            <p>{offer.pickupAirportCode} pickup{offer.pickupTime ? ` at ${formatDateTimeText(offer.pickupTime)}` : ""}</p>
+            <p>{offer.dropoffLabel}{offer.dropoffAddress ? ` · ${offer.dropoffAddress}` : ""}</p>
+            {offer.baggage ? <small>{offer.baggage}</small> : null}
+            {offer.cancellationNotes ? <small>{offer.cancellationNotes}</small> : null}
+            <small>{offer.provider}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ClientReviewWorkspace({ request }: { request: CorporateTravelRequest }) {
+  const review = request.clientReview;
+  const latestHistory = [...request.clientReviewHistory].reverse();
+  return (
+    <section className="builder-step-panel" aria-label="Client review status">
+      <div className="detail-info-card blue">
+        <strong>Status</strong>
+        <span>{review?.status || "Not Sent"}</span>
+        <strong>Revision round</strong>
+        <span>{review?.revisionRound ?? 0}</span>
+        <strong>Selected option</strong>
+        <span>{review?.selectedOptionIndex ? `Option ${review.selectedOptionIndex}` : "Pending"}</span>
+        <strong>Expires</strong>
+        <span>{review?.expiresAt ? formatDateTimeText(review.expiresAt) : "No active link"}</span>
+      </div>
+      {review?.changeSummary ? (
+        <div className="ai-recommendation-strip">
+          <Sparkles size={16} />
+          <div>
+            <strong>What changed</strong>
+            <span>{review.changeSummary}</span>
+          </div>
+        </div>
+      ) : null}
+      {review?.reviewUrl ? (
+        <a className="secondary-button" href={review.reviewUrl} target="_blank" rel="noreferrer">
+          <Send size={16} /> Open Client Dashboard
+        </a>
+      ) : (
+        <div className="empty-panel">Run the automated pipeline to send the signed client review link.</div>
+      )}
+      <div className="review-history-list">
+        {latestHistory.length ? latestHistory.map((event) => (
+          <article className="review-history-item" key={event.id}>
+            <strong>{reviewActionLabel(event.action)} · Round {event.revisionRound}</strong>
+            <span>{formatDateTimeText(event.createdAt)}</span>
+            {event.editRequestText ? <p>{event.editRequestText}</p> : null}
+            {event.changeSummary ? <p>{event.changeSummary}</p> : null}
+          </article>
+        )) : <div className="empty-panel">No client review activity yet.</div>}
+      </div>
+    </section>
+  );
+}
+
+function reviewActionLabel(action: string) {
+  if (action === "approved") return "Approved";
+  if (action === "edits_requested") return "Edits Requested";
+  if (action === "agent_review_required") return "Agent Review Required";
+  return "Review Link Sent";
+}
+
+function flightImageFor(offer: CorporateFlightOffer, recoveryMode: boolean) {
+  if (recoveryMode) return "/travel-media/flight-recovery.png";
+  return "/travel-media/flight-aircraft.png";
+}
+
+function hotelImageFor(offer: CorporateHotelOffer) {
+  if (offer.imageUrl) return offer.imageUrl;
+  const text = `${offer.name} ${offer.summary}`.toLowerCase();
+  if (text.includes("premium") || text.includes("flex")) return "/travel-media/hotel-lobby.png";
+  if (text.includes("city") || text.includes("office")) return "/travel-media/hotel-city.png";
+  return "/travel-media/hotel-business.png";
+}
+
+export function ClientReviewPortalScreen({ token }: { token: string }) {
+  const [review, setReview] = useState<ClientReviewResponse | null>(null);
+  const [selectedOption, setSelectedOption] = useState(1);
+  const [editRequest, setEditRequest] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadReview() {
+      setLoading(true);
+      try {
+        const result = await getClientReview(token);
+        if (!mounted) return;
+        setReview(result);
+        setSelectedOption(result.options[0]?.optionIndex || 1);
+        setStatusMessage("");
+      } catch {
+        if (mounted) setStatusMessage("This review link is unavailable or expired.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    void loadReview();
+    return () => {
+      mounted = false;
+    };
+  }, [token]);
+
+  async function approveOption(optionIndex: number) {
+    setSubmitting(true);
+    setStatusMessage("");
+    try {
+      const result = await submitClientReview(token, { action: "approve", selected_option_index: optionIndex });
+      setReview(result);
+      setSelectedOption(optionIndex);
+      setStatusMessage("Approved. Your final itinerary has been queued for email delivery.");
+    } catch {
+      setStatusMessage("Approval could not be submitted. Please contact the travel team.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function requestEdits() {
+    const comment = editRequest.trim();
+    if (!comment) {
+      setStatusMessage("Add the requested edits before submitting.");
+      return;
+    }
+    setSubmitting(true);
+    setStatusMessage("");
+    try {
+      const result = await submitClientReview(token, { action: "request_edits", edit_request_text: comment });
+      setReview(result);
+      setEditRequest("");
+      setStatusMessage(result.status === "Agent Review Required" ? "Your edits were sent to the travel team for review." : "Edits submitted. A refreshed review link has been emailed.");
+    } catch {
+      setStatusMessage("Edit request could not be submitted. Please contact the travel team.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="client-review-page">
+      <section className="client-review-header">
+        <div>
+          <p className="eyebrow">Client Review Dashboard</p>
+          <h1>{review?.travelerName || "Itinerary Review"}</h1>
+          <p>{review ? `${review.companyName} · ${review.route}` : "Loading itinerary options..."}</p>
+        </div>
+        {review ? (
+          <div className="detail-info-card blue">
+            <strong>Status</strong>
+            <span>{review.status}</span>
+            <strong>Round</strong>
+            <span>{review.revisionRound}</span>
+          </div>
+        ) : null}
+      </section>
+      {statusMessage ? <p className="workspace-status" role="status">{statusMessage}</p> : null}
+      {loading ? <section className="empty-panel">Loading review dashboard...</section> : null}
+      {review ? (
+        <>
+          {review.changeSummary ? (
+            <section className="ai-recommendation-strip">
+              <Sparkles size={16} />
+              <div>
+                <strong>What changed</strong>
+                <span>{review.changeSummary}</span>
+              </div>
+            </section>
+          ) : null}
+          <section className="client-review-grid" aria-label="Itinerary options">
+            {review.options.map((option) => (
+              <ClientReviewOptionCard
+                key={option.optionIndex}
+                option={option}
+                selected={selectedOption === option.optionIndex}
+                submitting={submitting}
+                onSelect={() => setSelectedOption(option.optionIndex)}
+                onApprove={() => void approveOption(option.optionIndex)}
+              />
+            ))}
+          </section>
+          <section className="client-edit-panel">
+            <div>
+              <h2>Request Edits</h2>
+              <p>{review.specialRequestNotice}</p>
+            </div>
+            <textarea
+              aria-label="Requested itinerary edits"
+              value={editRequest}
+              onChange={(event) => setEditRequest(event.target.value)}
+              placeholder="Example: move hotel closer to office, avoid late arrival, add extra luggage transfer buffer"
+            />
+            <button className="secondary-button" type="button" onClick={() => void requestEdits()} disabled={submitting || review.status === "Approved"}>
+              <MessageSquare size={16} /> Submit Edit Request
+            </button>
+          </section>
+        </>
+      ) : null}
+    </main>
+  );
+}
+
+function ClientReviewOptionCard({
+  option,
+  selected,
+  submitting,
+  onSelect,
+  onApprove
+}: {
+  option: ClientReviewOption;
+  selected: boolean;
+  submitting: boolean;
+  onSelect: () => void;
+  onApprove: () => void;
+}) {
+  return (
+    <article className={selected ? "client-review-option selected" : "client-review-option"}>
+      <div className="card-title-row">
+        <h2>Option {option.optionIndex}: {option.optionName}</h2>
+        <button className="secondary-button" type="button" onClick={onSelect}>{selected ? "Selected" : "Select"}</button>
+      </div>
+      <strong>{formatMoney(option.estimatedCost, option.currency)}</strong>
+      <p>{option.recommendationReason}</p>
+      <div className="review-segment-list">
+        <ReviewSegment icon={Plane} label="Flight" value={option.flight?.summary || option.flightSummary} detail={option.flight?.outbound} />
+        <ReviewSegment icon={Building2} label="Hotel" value={option.hotel?.name || option.hotelSummary} detail={hotelReviewDetail(option)} />
+        <ReviewSegment icon={Car} label="Airport Transfer" value={option.transfer?.vehicleType || option.transferSummary} detail={transferReviewDetail(option)} />
+      </div>
+      <div className="offer-card-badges">
+        <StatusPill value={option.policyStatus} />
+        {option.pros.slice(0, 2).map((item) => <StatusPill key={item} value={item} />)}
+      </div>
+      <button className="primary-button" type="button" onClick={onApprove} disabled={submitting}>
+        <CheckCircle2 size={16} /> Approve Option
+      </button>
+    </article>
+  );
+}
+
+function ReviewSegment({ icon: Icon, label, value, detail }: { icon: LucideIcon; label: string; value: string; detail?: string | null }) {
+  return (
+    <section className="review-segment">
+      <Icon size={17} />
+      <div>
+        <strong>{label}</strong>
+        <p>{value}</p>
+        {detail ? <span>{detail}</span> : null}
+      </div>
+    </section>
+  );
+}
+
+function hotelReviewDetail(option: ClientReviewOption) {
+  if (!option.hotel) return option.hotelSummary;
+  return [
+    option.hotel.address,
+    option.hotel.checkInStartsAt ? `Check-in starts ${option.hotel.checkInStartsAt}` : "",
+    option.hotel.checkoutTime ? `Checkout ${option.hotel.checkoutTime}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function transferReviewDetail(option: ClientReviewOption) {
+  if (!option.transfer) return option.transferSummary;
+  return [
+    `${option.transfer.pickupAirportCode}${option.transfer.pickupTime ? ` at ${formatDateTimeText(option.transfer.pickupTime)}` : ""}`,
+    option.transfer.dropoffLabel,
+    option.transfer.baggage,
+  ].filter(Boolean).join(" · ");
+}
+
 export function TripPlannerScreen() {
-  return <TravelerDashboard />;
+  const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [workingId, setWorkingId] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+
+  useEffect(() => {
+    ensureTravelSession()
+      .then(() => listCorporateRequests())
+      .then(setRequests)
+      .catch(() => setRequests([]));
+  }, []);
+
+  const filteredRequests = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return requests;
+    return requests.filter((request) => [
+      request.id,
+      request.travellerName,
+      request.company,
+      request.origin,
+      request.destination,
+      request.status,
+      request.recommendedPlans.find((plan) => plan.selected)?.name || request.recommendedPlans[0]?.name || ""
+    ].join(" ").toLowerCase().includes(query));
+  }, [requests, searchTerm]);
+
+  async function generatePlan(id: string) {
+    if (workingId) return;
+    setWorkingId(id);
+    setStatusMessage("Generating itinerary options...");
+    try {
+      const planned = await generateCorporateTravelPlan(id);
+      setRequests((current) => current.map((request) => request.id === planned.id ? planned : request));
+      setStatusMessage("Itinerary options are ready for review.");
+    } catch {
+      setStatusMessage("Itinerary options are unavailable. Continue with manual review.");
+    } finally {
+      setWorkingId("");
+    }
+  }
+
+  return (
+    <AppShell active="itineraries">
+      <section className="page-heading">
+        <div>
+          <h1>Itinerary Planner</h1>
+          <p>Review generated options, budget posture, policy fit, and final itinerary readiness.</p>
+        </div>
+      </section>
+      <section className="ops-card itinerary-page-card" aria-label="Itinerary queue">
+        <div className="card-title-row">
+          <h2>Itineraries</h2>
+          <label className="queue-search">
+            <Search size={15} />
+            <input
+              aria-label="Search itineraries"
+              placeholder="Search traveler, route, status"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="ticket-table-wrap">
+          <table className="ticket-table itinerary-table">
+            <thead>
+              <tr>
+                <th scope="col">Traveler</th>
+                <th scope="col">Route</th>
+                <th scope="col">Selected Plan</th>
+                <th scope="col">Budget</th>
+                <th scope="col">Status</th>
+                <th scope="col" className="ticket-actions-heading">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRequests.length ? filteredRequests.map((request) => {
+                const selectedPlan = request.recommendedPlans.find((plan) => plan.selected) || request.recommendedPlans[0] || null;
+                return (
+                  <tr key={request.id}>
+                    <td>
+                      <div className="ticket-identity">
+                        <strong>{request.travellerName}</strong>
+                        <span className="ticket-meta-line">
+                          <span className="request-card-id">{request.id}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{request.company}</span>
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="ticket-route-cell">
+                        <span>{request.origin || "Origin pending"}</span>
+                        <ArrowRight size={14} />
+                        <span>{request.destination || "Destination pending"}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="itinerary-plan-cell">
+                        <strong>{selectedPlan?.name || "Plan pending"}</strong>
+                        <span>{selectedPlan?.policyFit || nextActionFor(request)}</span>
+                      </div>
+                    </td>
+                    <td className="ticket-date-cell">{formatMoney(selectedPlan?.totalAmount || request.budgetAmount, selectedPlan?.currency || request.budgetCurrency)}</td>
+                    <td><StatusPill value={request.status} /></td>
+                    <td className="ticket-action-cell">
+                      <div className="itinerary-action-stack">
+                        <button
+                          className="ticket-action-button"
+                          type="button"
+                          onClick={() => void generatePlan(request.id)}
+                          disabled={workingId === request.id}
+                        >
+                          {workingId === request.id ? "Generating..." : "Generate Plan"}
+                        </button>
+                        <Link className="ticket-action-link" href={`/itineraries/${request.id}`}>Open Builder</Link>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }) : (
+                <tr>
+                  <td colSpan={6}>
+                    <div className="empty-panel">No itineraries match this search.</div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="queue-footer">
+          <span>Showing {filteredRequests.length ? 1 : 0} to {filteredRequests.length} of {filteredRequests.length} itineraries</span>
+          {statusMessage ? <span role="status">{statusMessage}</span> : null}
+        </div>
+      </section>
+    </AppShell>
+  );
 }
 
 export function CustomerIntakeScreen() {
@@ -1282,10 +2919,49 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
   const [finalizingRequest, setFinalizingRequest] = useState(false);
 
   useEffect(() => {
-    listCorporateRequests().then(setRequests).catch(() => setRequests([]));
+    ensureTravelSession()
+      .then(() => listCorporateRequests())
+      .then(setRequests)
+      .catch(() => setRequests([]));
   }, []);
 
   const request = requests.find((item) => item.id === requestId) || requests[0] || null;
+  const selectedFlight = request?.flightOffers.find((offer) => offer.id === request.selectedFlightOfferId) || request?.flightOffers[0] || null;
+  const selectedHotel = request?.hotelOffers.find((offer) => offer.id === request.selectedHotelOfferId) || request?.hotelOffers[0] || null;
+  const communicationItems = request ? [
+    {
+      icon: MessageSquare,
+      label: "Client request received",
+      meta: request.travellerEmail || "Client email",
+      body: `${request.origin || "Origin pending"} to ${request.destination || "Destination pending"} · ${request.departDate || "TBD"} to ${request.returnDate || "TBD"} · ${formatMoney(request.budgetAmount, request.budgetCurrency)}`,
+      detail: request.preferences ? "Traveler preferences were captured from the intake form." : request.originalRequest || "Travel form details are attached to this request."
+    },
+    {
+      icon: Sparkles,
+      label: request.aiSummary ? "AI draft prepared" : "AI draft pending",
+      meta: request.aiSummary ? "Plan generated" : "Generate plan",
+      body: request.aiSummary ? "Draft summary is ready for agent review." : "Generate a plan to create the customer-facing draft and policy notes.",
+      detail: selectedFlight || selectedHotel
+        ? [selectedFlight?.airline, selectedHotel?.name].filter(Boolean).join(" + ")
+        : request.budgetPolicyCheck || "No option selected yet."
+    },
+    {
+      icon: ShieldCheck,
+      label: "Approval status",
+      meta: request.approvalStatus === "Required" ? "Approval required" : request.approvalStatus || "Not required",
+      body: request.finalApproved ? "Approval received and recorded for this itinerary." : "Approval is not yet recorded for final handoff.",
+      detail: request.criticalIssueStatus === "Urgent" ? request.criticalIssue || "Critical issue is marked urgent." : "No urgent communication flag is active."
+    },
+    {
+      icon: FileText,
+      label: request.status === "finalized" ? "Final PDF ready" : "Final PDF pending",
+      meta: request.status === "finalized" ? "Ready to send" : "Agent review required",
+      body: request.status === "finalized"
+        ? "Final itinerary PDF can be sent to the client with the selected flight and hotel."
+        : "Finalize after agent review to unlock the client PDF handoff.",
+      detail: request.customerMessageDraft || request.finalItineraryDraft || "Client message will appear after planning."
+    }
+  ] : [];
 
   async function generatePlan() {
     if (!request) return;
@@ -1366,11 +3042,11 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
   async function downloadExport() {
     if (!request) return;
     try {
-      const blob = await downloadCorporateRequestExcel(request.id);
+      const blob = await downloadCorporateRequestPdf(request.id);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${request.id}-final-itinerary.xlsx`;
+      link.download = `${request.id}-final-itinerary.pdf`;
       link.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -1415,8 +3091,30 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
         </article>
         <article className="ops-card detail-card">
           <h2>Communication Thread</h2>
-          <p>{request?.originalRequest || "No live request conversation loaded yet."}</p>
-          <textarea aria-label="Internal note" defaultValue={request?.customerMessageDraft || ""} />
+          <div className="communication-thread">
+            {communicationItems.length ? communicationItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <div className="communication-item" key={item.label}>
+                  <span className="communication-icon"><Icon size={16} /></span>
+                  <div>
+                    <div className="communication-item-head">
+                      <strong>{item.label}</strong>
+                      <span>{item.meta}</span>
+                    </div>
+                    <p>{item.body}</p>
+                    <small>{item.detail}</small>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div className="communication-empty">No live request conversation loaded yet.</div>
+            )}
+          </div>
+          <label className="thread-note">
+            <span>Client-facing note</span>
+            <textarea aria-label="Internal note" defaultValue={request?.customerMessageDraft || ""} />
+          </label>
         </article>
         <article className="ops-card detail-card">
           <h2>Policy & Budget</h2>
@@ -1424,8 +3122,8 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
           <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy and budget posture."}</pre>
           <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
           <button className="secondary-button" type="button" onClick={() => void finalizeItinerary()} disabled={finalizingRequest || !request}><CheckCircle2 size={16} /> Finalize Itinerary</button>
-          <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><FileSpreadsheet size={16} /> Send Final Itinerary</button>
-          <button className="secondary-button" type="button" onClick={() => void downloadExport()} disabled={!request}><Download size={16} /> Download Export</button>
+          <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><Send size={16} /> Send PDF to Client</button>
+          <button className="secondary-button" type="button" onClick={() => void downloadExport()} disabled={!request}><Download size={16} /> Download PDF</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
       </section>
@@ -1438,7 +3136,10 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
   const [statusMessage, setStatusMessage] = useState("");
 
   useEffect(() => {
-    listCorporateRequests().then(setRequests).catch(() => setRequests([]));
+    ensureTravelSession()
+      .then(() => listCorporateRequests())
+      .then(setRequests)
+      .catch(() => setRequests([]));
   }, []);
 
   const request = requests.find((item) => item.id === requestId) || requests[0] || null;
@@ -1556,12 +3257,23 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
 
 export function TravelerRosterScreen() {
   const [travelers, setTravelers] = useState<TravelerProfile[]>([]);
+  const [reviewItems, setReviewItems] = useState<RosterReviewItem[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [documentIssuesOnly, setDocumentIssuesOnly] = useState(false);
   const [vipOnly, setVipOnly] = useState(false);
+  const [reviewStatus, setReviewStatus] = useState("");
+  const [workingReviewId, setWorkingReviewId] = useState<string | null>(null);
 
   useEffect(() => {
-    listTravelers().then(setTravelers).catch(() => setTravelers([]));
+    ensureTravelSession()
+      .then(() => listTravelers())
+      .then((items) => {
+        setTravelers(items);
+        setReviewItems((current) => pendingRosterReviewItems(current.length ? current : INITIAL_ROSTER_REVIEW_ITEMS, items));
+      })
+      .catch(() => setTravelers([]))
+      .finally(() => setReviewLoading(false));
   }, []);
 
   const filteredTravelers = useMemo(() => {
@@ -1582,13 +3294,71 @@ export function TravelerRosterScreen() {
     });
   }, [documentIssuesOnly, searchTerm, travelers, vipOnly]);
 
+  async function approveReviewItem(item: RosterReviewItem) {
+    const nextTraveler = travelerFromReviewItem(item);
+    const existing = travelers.find((traveler) => traveler.email.toLowerCase() === item.travelerEmail.toLowerCase());
+    const profileToSave = existing ? { ...existing, ...nextTraveler, id: existing.id, created_at: existing.created_at } : nextTraveler;
+    setWorkingReviewId(item.id);
+    setReviewStatus("");
+    try {
+      const savedTraveler = await saveTravelerProfile(profileToSave);
+      setTravelers((current) => {
+        const found = current.some((traveler) => traveler.id === savedTraveler.id);
+        return found
+          ? current.map((traveler) => traveler.id === savedTraveler.id ? savedTraveler : traveler)
+          : [savedTraveler, ...current];
+      });
+      setReviewItems((current) => current.filter((candidate) => candidate.id !== item.id));
+      setReviewStatus(`${item.travelerName} ${item.kind === "registration" ? "added to" : "updated in"} the traveler roster.`);
+    } catch {
+      setReviewStatus(`${item.travelerName} could not be saved to the traveler roster. Please try again.`);
+    } finally {
+      setWorkingReviewId(null);
+    }
+  }
+
+  function rejectReviewItem(item: RosterReviewItem) {
+    setReviewItems((current) => current.filter((candidate) => candidate.id !== item.id));
+    setReviewStatus(`${item.travelerName} review request dismissed.`);
+  }
+
   return (
-    <AppShell active="travelers">
+    <AppShell active="travelers" notificationCount={reviewLoading ? undefined : reviewItems.length}>
+      <>
       <section className="page-heading">
         <div>
           <h1>Traveler Roster</h1>
-          <p>Manage corporate travelers, VIP status, documents, loyalty, and preference readiness.</p>
+          <p>Review registration and profile update forms before trusted traveler data is added to the roster.</p>
         </div>
+      </section>
+      <section className="ops-card roster-review-card" id="roster-review-queue" aria-label="Roster review queue">
+        <div className="card-title-row">
+          <h2>Roster Review</h2>
+          <StatusPill value={reviewLoading ? "Loading" : `${reviewItems.length} Pending`} />
+        </div>
+        <p className="muted-copy">Submitted forms are classified before they update long-term traveler data. The agent reviews each registration or update before the roster changes.</p>
+        <div className="roster-review-grid">
+          {reviewLoading ? <div className="empty-panel">Loading roster review.</div> : reviewItems.length ? reviewItems.map((item) => (
+            <article className="roster-review-item" key={item.id}>
+              <div>
+                <StatusPill value={item.kind === "registration" ? "New Registration" : "Profile Update"} />
+                <h3>{item.travelerName}</h3>
+                <p>{item.travelerEmail}</p>
+              </div>
+              <p>{item.summary}</p>
+              <ul>
+                {item.extractedFields.map((field) => <li key={field}>{field}</li>)}
+              </ul>
+              <div className="review-actions">
+                <button className="secondary-button" type="button" onClick={() => rejectReviewItem(item)} disabled={workingReviewId === item.id}>Reject</button>
+                <button className="primary-button" type="button" onClick={() => approveReviewItem(item)} disabled={workingReviewId === item.id}>
+                  <CheckCircle2 size={16} /> {workingReviewId === item.id ? "Saving" : "Approve"}
+                </button>
+              </div>
+            </article>
+          )) : <div className="empty-panel">No registration or profile update forms are waiting for review.</div>}
+        </div>
+        {reviewStatus ? <p className="form-status" role="status">{reviewStatus}</p> : null}
       </section>
       <section className="ops-card table-card">
         <label className="topbar-control">
@@ -1616,6 +3386,7 @@ export function TravelerRosterScreen() {
           ))}
         </div>
       </section>
+      </>
     </AppShell>
   );
 }
@@ -1627,8 +3398,19 @@ export function TravelerDossierScreen({ travelerId }: { travelerId: string }) {
   const [sendingNotification, setSendingNotification] = useState(false);
 
   useEffect(() => {
-    getTraveler(travelerId).then(setTraveler).catch(() => setTraveler(null));
-    listCorporateRequests().then(setRequests).catch(() => setRequests([]));
+    ensureTravelSession()
+      .then(() => Promise.all([
+        getTraveler(travelerId).catch(() => null),
+        listCorporateRequests().catch(() => [])
+      ]))
+      .then(([nextTraveler, nextRequests]) => {
+        setTraveler(nextTraveler);
+        setRequests(nextRequests);
+      })
+      .catch(() => {
+        setTraveler(null);
+        setRequests([]);
+      });
   }, [travelerId]);
 
   const linkedRequest = useMemo(() => {
@@ -1677,7 +3459,11 @@ export function TravelerDossierScreen({ travelerId }: { travelerId: string }) {
         </article>
         <article className="ops-card detail-card">
           <h2>Travel Documents</h2>
-          {traveler?.documents.map((doc) => <p key={doc.label}><strong>{doc.label}</strong> {doc.status}</p>) || <p>No documents loaded</p>}
+          {traveler?.documents.map((doc) => (
+            <p key={doc.label}>
+              <strong>{doc.label}</strong> {doc.status}{doc.redacted_value ? ` · ${doc.redacted_value}` : ""}
+            </p>
+          )) || <p>No documents loaded</p>}
           <button className="secondary-button" type="button" onClick={() => void sendDocumentUpdateEmail()} disabled={sendingNotification || !traveler}><Send size={16} /> Send Document Update</button>
           {notification ? <p role="status">{notification}</p> : null}
         </article>
@@ -1698,6 +3484,7 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
   useEffect(() => {
     let active = true;
     async function loadPolicies() {
+      await ensureTravelSession();
       const [items, detail] = await Promise.all([
         listPolicies().catch(() => []),
         policyId ? getPolicy(policyId).catch(() => null) : Promise.resolve(null)
@@ -1720,7 +3507,7 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
   return (
     <AppShell active="policy">
       <section className="page-heading">
-        <div><h1>Policy Center</h1><p>Manage corporate travel governance and rule automation across the portfolio.</p></div>
+        <div><h1>Policy Context</h1><p>Check travel rules, flag exceptions, and keep agent notes ready before booking.</p></div>
         <Link className="primary-button" href="/policy/activity">Audit Log</Link>
       </section>
       <section className="workspace-grid">
@@ -1737,9 +3524,9 @@ export function PolicyCenterScreen({ policyId }: { policyId?: string }) {
         </article>
         <article className="ops-card detail-card">
           <h2>Upload Context</h2>
-          <p>Company Policy</p>
-          <p>Traveller History</p>
-          <p>Visa Rules</p>
+          <p>Policy documents</p>
+          <p>Traveler history</p>
+          <p>Visa and passport rules</p>
         </article>
         <article className="ops-card detail-card">
           <h2>Extracted Rules</h2>
@@ -1758,8 +3545,19 @@ export function PolicyReviewScreen({ policyId }: { policyId: string }) {
   const [reviewComment, setReviewComment] = useState("");
 
   useEffect(() => {
-    listPolicyVersions(policyId).then(setVersions).catch(() => setVersions([]));
-    getPolicy(policyId).then(setPolicy).catch(() => setPolicy(null));
+    ensureTravelSession()
+      .then(() => Promise.all([
+        listPolicyVersions(policyId).catch(() => []),
+        getPolicy(policyId).catch(() => null)
+      ]))
+      .then(([nextVersions, nextPolicy]) => {
+        setVersions(nextVersions);
+        setPolicy(nextPolicy);
+      })
+      .catch(() => {
+        setVersions([]);
+        setPolicy(null);
+      });
   }, [policyId]);
 
   const revision = versions[0] || null;
@@ -1833,7 +3631,10 @@ export function PolicyActivityArchiveScreen() {
   const [events, setEvents] = useState<PolicyActivityEvent[]>([]);
 
   useEffect(() => {
-    listPolicyActivity().then(setEvents).catch(() => setEvents([]));
+    ensureTravelSession()
+      .then(() => listPolicyActivity())
+      .then(setEvents)
+      .catch(() => setEvents([]));
   }, []);
 
   function exportCsv() {
@@ -1868,16 +3669,163 @@ export function PolicyActivityArchiveScreen() {
   );
 }
 
+export function AuditArchiveScreen() {
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [emailEvents, setEmailEvents] = useState<EmailEvent[]>([]);
+  const auth = useTravelAuth();
+  const canView = Boolean(auth?.scopes.some((scope) => scope === "travel:plan" || scope === "admin:audit" || scope === "admin:summary"));
+
+  useEffect(() => {
+    if (!canView) return;
+    let mounted = true;
+    ensureTravelSession()
+      .then(() => Promise.all([
+        getAuditEvents().catch(() => []),
+        getEmailEvents().catch(() => [])
+      ]))
+      .then(([nextAuditEvents, nextEmailEvents]) => {
+        if (!mounted) return;
+        setAuditEvents(nextAuditEvents);
+        setEmailEvents(nextEmailEvents);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setAuditEvents([]);
+        setEmailEvents([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [canView]);
+
+  const emailCounts = useMemo(() => ({
+    sent: emailEvents.filter((event) => event.status === "sent").length,
+    received: emailEvents.filter((event) => event.status === "received").length,
+    attention: emailEvents.filter((event) => event.status === "failed" || event.status === "configuration_required").length
+  }), [emailEvents]);
+  const auditGroups = useMemo(() => AUDIT_GROUPS.map((group) => ({
+    ...group,
+    events: auditEvents.filter((event) => auditGroupFor(event) === group.key)
+  })), [auditEvents]);
+
+  if (!canView) {
+    return (
+      <AppShell active="audit">
+        <section className="ops-card access-card">
+          <ShieldCheck size={28} />
+          <h1>Audit access is restricted.</h1>
+          <Link className="primary-button" href="/dashboard">Open Agent Workspace</Link>
+        </section>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell active="audit">
+      <section className="page-heading">
+        <div><h1>Audit</h1><p>Pipeline, approval, and delivery evidence.</p></div>
+      </section>
+
+      <section className="admin-metric-grid">
+        <article className="metric-card"><Plane size={18} /><span>Pipeline Logs</span><strong>{auditGroups.find((group) => group.key === "pipeline")?.events.length || 0}</strong></article>
+        <article className="metric-card"><Send size={18} /><span>Sent Emails</span><strong>{emailCounts.sent}</strong></article>
+        <article className="metric-card"><Download size={18} /><span>Received Emails</span><strong>{emailCounts.received}</strong></article>
+        <article className="metric-card"><AlertTriangle size={18} /><span>Email Attention</span><strong>{emailCounts.attention}</strong></article>
+      </section>
+
+      {auditGroups.map(({ key, label, icon: Icon, events }) => (
+        <section className="ops-card table-card" key={key}>
+          <div className="card-title-row">
+            <h2>{label}</h2>
+            <Icon size={18} />
+          </div>
+          <div className="request-table">
+            <div className="request-table-head"><span>Event</span><span>Decision</span><span>Message</span><span>Time</span></div>
+            {events.length ? events.map((event) => (
+              <div className="request-table-row" key={event.id}>
+                <span>{event.event_type}<small>{event.trip_id || "No request linked"}</small></span>
+                <StatusPill value={event.decision || "record"} />
+                <span>{event.message}<small>{event.purpose || "No purpose recorded"}</small></span>
+                <span>{formatUpdated(event.created_at)}</span>
+              </div>
+            )) : (
+              <div className="request-table-row"><span>No logs loaded</span><StatusPill value="record" /><span>No activity in this category.</span><span>Now</span></div>
+            )}
+          </div>
+        </section>
+      ))}
+
+      <section className="ops-card table-card">
+        <div className="card-title-row">
+          <h2>Email Itinerary</h2>
+          <Send size={18} />
+        </div>
+        <div className="request-table">
+          <div className="request-table-head"><span>Type</span><span>Status</span><span>Subject</span><span>Email Content</span></div>
+          {emailEvents.length ? emailEvents.map((event) => (
+            <div className="request-table-row" key={event.id}>
+              <span>{event.kind || "received"}<small>{event.request_id || "No request linked"}</small></span>
+              <span><StatusPill value={event.status} /><small>{event.provider_message_id || event.provider}</small></span>
+              <span>{event.subject || "No subject"}<small>{event.to.length ? event.to.join(", ") : "No recipients recorded"}</small></span>
+              <div>
+                <details>
+                  <summary>View email itinerary</summary>
+                  <p>{event.safe_message}</p>
+                  {event.body_text ? <pre>{event.body_text}</pre> : <p>No email body captured for this event.</p>}
+                  {event.attachment_names?.length ? <small>Attachments: {event.attachment_names.join(", ")}</small> : <small>No attachments recorded</small>}
+                </details>
+                <small>{formatUpdated(event.created_at)}</small>
+              </div>
+            </div>
+          )) : (
+            <div className="request-table-row"><span>No email logs loaded</span><StatusPill value="record" /><span>Delivery events will appear here.</span><span>Now</span></div>
+          )}
+        </div>
+      </section>
+    </AppShell>
+  );
+}
+
 function csvCell(value: string) {
   return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
+type AuditGroupKey = "pipeline" | "requests" | "travelerPolicy" | "system";
+
+const AUDIT_GROUPS: Array<{ key: AuditGroupKey; label: string; icon: LucideIcon }> = [
+  { key: "pipeline", label: "Pipeline And Itineraries", icon: Plane },
+  { key: "requests", label: "Request Queue", icon: FileText },
+  { key: "travelerPolicy", label: "Traveler And Policy", icon: ShieldCheck },
+  { key: "system", label: "System Access", icon: History }
+];
+
+function auditGroupFor(event: AuditEvent): AuditGroupKey {
+  const type = event.event_type;
+  if (
+    type.includes("pipeline")
+    || type.includes("option_pdf")
+    || type.includes("notification")
+    || type === "corporate.plan.allowed"
+    || type === "corporate.finalize.allowed"
+  ) {
+    return "pipeline";
+  }
+  if (type.startsWith("corporate.request")) return "requests";
+  if (type.startsWith("traveler") || type.startsWith("polic")) return "travelerPolicy";
+  return "system";
 }
 
 export function AdminDashboard() {
   const [summary, setSummary] = useState<CorporateAdminSummary>(() => summaryFromRequests([]));
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [companies, setCompanies] = useState<CompanyPipelineStatus[]>([]);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<CorporateUploadResponse | null>(null);
+  const [policyFile, setPolicyFile] = useState<File | null>(null);
+  const [policyCompanyName, setPolicyCompanyName] = useState("");
+  const [policyResult, setPolicyResult] = useState<CompanyPolicyImportResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "uploading">("idle");
+  const [policyStatus, setPolicyStatus] = useState<"idle" | "uploading">("idle");
   const role = useSelectedRole();
   const auth = useTravelAuth();
   const canView = isAdminContext(auth, role);
@@ -1898,6 +3846,13 @@ export function AdminDashboard() {
       })
       .catch(() => {
         if (mounted) setAuditEvents([]);
+      });
+    listCompanyPipelineStatuses()
+      .then((items) => {
+        if (mounted) setCompanies(items);
+      })
+      .catch(() => {
+        if (mounted) setCompanies([]);
       });
     return () => {
       mounted = false;
@@ -1920,10 +3875,26 @@ export function AdminDashboard() {
     try {
       const result = await uploadCorporateRequests(uploadFile);
       setUploadResult(result);
+      setCompanies(await listCompanyPipelineStatuses().catch(() => []));
     } catch {
-      setUploadResult({ totalRows: 0, createdRequests: 0, skippedRows: 0, requests: [] });
+      setUploadResult({ totalRows: 0, createdRequests: 0, skippedRows: 0, employeeProfiles: 0, requests: [] });
     } finally {
       setStatus("idle");
+    }
+  }
+
+  async function uploadPolicyPdfToBackend() {
+    if (!policyFile || policyStatus === "uploading") return;
+    setPolicyStatus("uploading");
+    try {
+      const result = await uploadCompanyPolicyPdf(policyFile, policyCompanyName.trim() || undefined);
+      setPolicyResult(result);
+      setCompanies(await listCompanyPipelineStatuses().catch(() => []));
+      setPolicyFile(null);
+    } catch {
+      setPolicyResult({ companyName: policyCompanyName || "Company pending", policyCount: 0, rules: [] });
+    } finally {
+      setPolicyStatus("idle");
     }
   }
 
@@ -1933,11 +3904,11 @@ export function AdminDashboard() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "corporate_travel_requests_template.xlsx";
+      link.download = "corporate_travel_company_profile_template.xlsx";
       link.click();
       URL.revokeObjectURL(url);
     } catch {
-      setUploadResult({ totalRows: 0, createdRequests: 0, skippedRows: 0, requests: [] });
+      setUploadResult({ totalRows: 0, createdRequests: 0, skippedRows: 0, employeeProfiles: 0, requests: [] });
     }
   }
 
@@ -1958,7 +3929,7 @@ export function AdminDashboard() {
       <section className="page-heading">
         <div>
           <h1>Application Admin</h1>
-          <p>Upload company data, manage policy/client context, and keep the agent workspace supplied with trusted information.</p>
+          <p>Upload company traveler history, preferences, policy, approvals, and document context for the agent workspace.</p>
         </div>
       </section>
 
@@ -1975,10 +3946,10 @@ export function AdminDashboard() {
       <section className="admin-two-column">
         <section className="ops-card upload-card">
           <div className="card-title-row">
-            <h2>Upload Company Data</h2>
+            <h2>Import Company Data</h2>
             <FileSpreadsheet size={18} />
           </div>
-          <p className="muted-copy">Workbook sheets can include travel requests, company policy, traveller history, and visa rules.</p>
+          <p className="muted-copy">Upload the manager-controlled traveler workbook with traveler profiles, preferences, visa/passport records, hotel insights, flight preferences, and past travel history. Company policy is uploaded separately as PDF.</p>
           <button className="secondary-button" type="button" onClick={() => void downloadTemplate()}>
             <Download size={16} /> Download Template
           </button>
@@ -1988,16 +3959,71 @@ export function AdminDashboard() {
             <input type="file" accept=".xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] || null)} />
           </label>
           <button className="primary-button" type="button" disabled={!uploadFile || status === "uploading"} onClick={() => void uploadFileToBackend()}>
-            {status === "uploading" ? "Uploading..." : "Upload Requests"}
+            {status === "uploading" ? "Uploading..." : "Import Workbook"}
           </button>
           {uploadResult ? (
             <div className="upload-result" role="status">
-              <p><strong>{uploadResult.createdRequests}</strong> created from <strong>{uploadResult.totalRows}</strong> rows</p>
+              <p><strong>{uploadResult.totalRows}</strong> rows processed</p>
+              <p><strong>{uploadResult.employeeProfiles}</strong> employee profiles imported</p>
               <p>{uploadResult.skippedRows} skipped</p>
               {uploadResult.requests.map((request) => <span key={request.id}>{request.id}</span>)}
             </div>
           ) : null}
         </section>
+        <section className="ops-card upload-card">
+          <div className="card-title-row">
+            <h2>Import Company Policy PDF</h2>
+            <FileText size={18} />
+          </div>
+          <p className="muted-copy">Upload a policy PDF for the selected company. The agent AI uses it with the traveler roster when generating or recovering itineraries.</p>
+          <label>
+            <span>Company name</span>
+            <input value={policyCompanyName} onChange={(event) => setPolicyCompanyName(event.target.value)} placeholder="Company name from workbook" />
+          </label>
+          <label className="file-input">
+            <Upload size={18} />
+            <span>{policyFile ? policyFile.name : "Select policy PDF"}</span>
+            <input aria-label="Select policy PDF" type="file" accept=".pdf,application/pdf" onChange={(event) => setPolicyFile(event.target.files?.[0] || null)} />
+          </label>
+          <button className="primary-button" type="button" disabled={!policyFile || policyStatus === "uploading"} onClick={() => void uploadPolicyPdfToBackend()}>
+            {policyStatus === "uploading" ? "Uploading..." : "Import Policy PDF"}
+          </button>
+          {policyResult ? (
+            <div className="upload-result" role="status">
+              <p><strong>{policyResult.policyCount}</strong> policy file imported for {policyResult.companyName}</p>
+              <p>{policyResult.rules[0] || "Policy PDF processed for AI context."}</p>
+            </div>
+          ) : null}
+        </section>
+      </section>
+
+      <section className="ops-card company-pipeline-card">
+        <div className="card-title-row">
+          <h2>Company Pipeline</h2>
+          <Building2 size={18} />
+        </div>
+        <div className="company-pipeline-grid">
+          {companies.length ? companies.map((company) => (
+            <article className="company-pipeline-item" key={company.companyName}>
+              <div className="company-pipeline-head">
+                <strong>{company.companyName}</strong>
+                <StatusPill value={company.policyStatus === "Uploaded" && company.travelerListStatus === "Updated" ? "Ready" : "Missing context"} />
+              </div>
+              <div className="company-pipeline-statuses">
+                <span><UsersIcon size={15} /> Travelers <strong>{company.travelerListStatus}</strong></span>
+                <span><FileText size={15} /> Policy <strong>{company.policyStatus}</strong></span>
+              </div>
+              <dl>
+                <div><dt>Travelers</dt><dd>{company.travelerCount}</dd></div>
+                <div><dt>History rows</dt><dd>{company.historyRowCount}</dd></div>
+                <div><dt>Visa records</dt><dd>{company.visaRecordCount}</dd></div>
+                <div><dt>Policy PDFs</dt><dd>{company.policyCount}</dd></div>
+              </dl>
+            </article>
+          )) : (
+            <div className="empty-panel">No company context uploaded yet.</div>
+          )}
+        </div>
       </section>
 
       <section className="ops-card destinations-card">

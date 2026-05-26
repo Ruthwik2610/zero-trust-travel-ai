@@ -19,9 +19,11 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECAS
 BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
 API_KEY_RE = re.compile(r"\b(?:sk|pk|api|key|token)[-_]?[A-Za-z0-9][A-Za-z0-9._-]{12,}\b", re.IGNORECASE)
 PASSPORT_RE = re.compile(r"\b[A-Z][0-9]{7,8}\b")
+PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)")
 
 TOKEN_TTL_SECONDS = 15 * 60
 TOKEN_VERSION = "travel-ai-v1"
+DEFAULT_DEMO_PASSWORD = "travel-demo-2026"
 
 TRAVELER_AGENT_CHAIN = {
     "trip_intake": {"travel:plan"},
@@ -86,7 +88,7 @@ DEMO_IDENTITIES: dict[str, dict[str, Any]] = {
     },
     "demo.agent@unipro.com": {
         "user_id": "usr_demo_agent",
-        "role": "travel_manager",
+        "role": "traveler",
         "department": "travel_ops",
         "scopes": [
             "travel:plan",
@@ -95,15 +97,10 @@ DEMO_IDENTITIES: dict[str, dict[str, Any]] = {
             "visa:self",
             "supplier:search",
             "self:trips",
-            "admin:summary",
-            "admin:audit",
-            "approval:read",
-            "budget:aggregate",
             "policy:read",
-            "policy:write",
-            "visa:aggregate",
+            "traveler:read",
         ],
-        "manager_scope": ["sales", "engineering", "finance", "travel_ops"],
+        "manager_scope": [],
     },
     "travel.manager@unipro.com": {
         "user_id": "usr_travel_manager",
@@ -128,6 +125,11 @@ DEMO_IDENTITIES: dict[str, dict[str, Any]] = {
     },
 }
 
+DEMO_LOGIN_ACCOUNTS = {
+    "agent": "demo.agent@unipro.com",
+    "admin": "admin.user@unipro.com",
+}
+
 
 class SecurityError(ValueError):
     pass
@@ -138,7 +140,30 @@ def redact_sensitive_text(text: str) -> str:
     redacted = BEARER_RE.sub("[redacted-token]", redacted)
     redacted = API_KEY_RE.sub("[redacted-token]", redacted)
     redacted = PASSPORT_RE.sub("[redacted-id]", redacted)
-    return redacted
+    return PHONE_RE.sub(_redact_phone_match, redacted)
+
+
+def mask_sensitive_customer_text(text: str) -> str:
+    return PASSPORT_RE.sub(lambda match: _mask_identifier(match.group(0)), text)
+
+
+def _mask_identifier(value: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9]", "", value)
+    if not clean:
+        return ""
+    if len(clean) <= 4:
+        return "*" * len(clean)
+    return f"{'*' * (len(clean) - 4)}{clean[-4:]}"
+
+
+def _redact_phone_match(match: re.Match[str]) -> str:
+    candidate = match.group(0)
+    return "[redacted-phone]" if looks_like_phone(candidate) else candidate
+
+
+def looks_like_phone(value: str) -> bool:
+    digits = re.sub(r"\D", "", value)
+    return len(digits) >= 9 and ("+" in value or " " in value or "(" in value or ")" in value)
 
 
 def public_error_message(exc: Exception) -> str:
@@ -177,6 +202,22 @@ def create_access_token(email: str, ttl_seconds: int = TOKEN_TTL_SECONDS) -> tup
     encoded_payload = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signature = _sign(encoded_payload.encode("ascii"))
     return f"{encoded_payload}.{signature}", context
+
+
+def resolve_demo_login_identity(email: str | None = None, username: str | None = None, password: str | None = None) -> str:
+    normalized_email = (email or "").strip().lower()
+    normalized_username = (username or "").strip().lower()
+    if not normalized_username or not password:
+        raise SecurityError("Invalid username or password")
+    account_email = DEMO_LOGIN_ACCOUNTS.get(normalized_username)
+    if not account_email:
+        raise SecurityError("Invalid username or password")
+    if normalized_email and normalized_email != account_email:
+        raise SecurityError("Invalid username or password")
+    expected = _demo_password(normalized_username)
+    if not hmac.compare_digest(password, expected):
+        raise SecurityError("Invalid username or password")
+    return account_email
 
 
 def verify_access_token(token: str) -> AuthContext:
@@ -227,6 +268,13 @@ def demo_auth_context(email: str, expires_at: int | None = None) -> AuthContext:
         manager_scope=list(profile["manager_scope"]),
         token_expires_at=expires_at or int(time.time()) + TOKEN_TTL_SECONDS,
     )
+
+
+def _demo_password(username: str) -> str:
+    specific = os.getenv(f"TRAVEL_AI_{username.upper()}_PASSWORD")
+    if specific:
+        return specific
+    return os.getenv("TRAVEL_AI_DEMO_PASSWORD") or DEFAULT_DEMO_PASSWORD
 
 
 def require_purpose(purpose: str | None) -> str:

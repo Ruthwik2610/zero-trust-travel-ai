@@ -1,0 +1,17 @@
+Travel AI is a guided operations workspace for corporate travel teams.
+
+It is designed for the moments when travel requests, employee details, company policies, approvals, and last minute disruptions are spread across too many places.
+
+The workflow starts with the travel agent. Requests can arrive from uploaded forms or be entered manually, and they land in one structured queue. From there, the team can search, filter, and open the request that needs attention.
+
+Inside the guided itinerary builder, the agent works step by step. First, missing information and traveler readiness are reviewed. Then flight options are generated and compared with route, cost, provider, and policy context. After a flight is selected, the hotel step becomes available, helping the team choose a stay that fits the timing and company requirements.
+
+The itinerary review brings the plan together. The helper explains the current step without changing the request unless the agent applies the suggestion. This keeps the workflow controlled, while still giving the team useful AI guidance.
+
+When a critical issue appears, such as a cancelled flight, Travel AI opens directly into recovery planning. The agent can focus on same-origin alternatives, hotel adjustments, traveler updates, and the next handoff instead of starting a separate conversation from scratch.
+
+The final step is approval and export. The team can send the approval request, record the response, generate the reviewed itinerary, and download the handoff package.
+
+Managers provide the company context. They upload the traveler workbook and policy PDF, and that context becomes available to the agent workspace. After the manager upload, the agent can see the company request in the queue and continue planning with the right background already applied.
+
+Travel AI does not need to claim automatic booking to create value. Its value is turning scattered corporate travel information into a controlled, reviewable workflow from request intake through itinerary handoff.

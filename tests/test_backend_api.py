@@ -9,7 +9,7 @@ BACKEND_PATH = Path(__file__).resolve().parents[1] / "backend"
 if str(BACKEND_PATH) not in sys.path:
     sys.path.insert(0, str(BACKEND_PATH))
 
-from app.main import app, cors_allowed_origins
+from app.main import app, cors_allowed_origins, validate_production_environment
 from app.security import create_access_token
 
 
@@ -56,6 +56,53 @@ def test_production_requires_explicit_token_secret(monkeypatch):
         assert "TRAVEL_AI_TOKEN_SECRET is required in production" in str(exc)
     else:
         raise AssertionError("production token creation should fail without TRAVEL_AI_TOKEN_SECRET")
+
+
+def test_startup_validates_required_production_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRAVEL_AI_ENV", "production")
+    monkeypatch.delenv("TRAVEL_AI_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("TRAVEL_AI_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+    monkeypatch.delenv("TRAVEL_AI_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.delenv("TRAVEL_AI_DB_PATH", raising=False)
+
+    try:
+        validate_production_environment()
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "TRAVEL_AI_TOKEN_SECRET" in message
+        assert "TRAVEL_AI_ENCRYPTION_KEY" in message
+        assert "FRONTEND_ORIGIN or TRAVEL_AI_ALLOWED_ORIGINS" in message
+        assert "TRAVEL_AI_DB_PATH" in message
+    else:
+        raise AssertionError("production startup should fail when required env values are missing")
+
+    monkeypatch.setenv("TRAVEL_AI_TOKEN_SECRET", "test-token-secret")
+    monkeypatch.setenv("TRAVEL_AI_ENCRYPTION_KEY", "test-encryption-key")
+    monkeypatch.setenv("FRONTEND_ORIGIN", "https://travel.example.com")
+    monkeypatch.setenv("TRAVEL_AI_DB_PATH", str(tmp_path / "travel_ai.db"))
+
+    validate_production_environment()
+
+
+def test_demo_login_accepts_username_password_and_rejects_wrong_password(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+
+    agent = client.post("/api/auth/demo-login", json={"username": "agent", "password": "travel-demo-2026"})
+    assert agent.status_code == 200
+    assert agent.json()["user"]["email"] == "demo.agent@unipro.com"
+    assert "admin:summary" not in agent.json()["user"]["scopes"]
+
+    admin = client.post("/api/auth/demo-login", json={"username": "admin", "password": "travel-demo-2026"})
+    assert admin.status_code == 200
+    assert admin.json()["user"]["email"] == "admin.user@unipro.com"
+    assert "admin:summary" in admin.json()["user"]["scopes"]
+
+    denied = client.post("/api/auth/demo-login", json={"username": "agent", "password": "wrong-password"})
+    assert denied.status_code == 401
+
+    email_only = client.post("/api/auth/demo-login", json={"email": "admin.user@unipro.com"})
+    assert email_only.status_code == 401
 
 
 def test_plan_response_is_polished_and_records_provider_unavailable(tmp_path, monkeypatch):
@@ -388,6 +435,50 @@ def test_currency_conversion_uses_mcp_tool(tmp_path, monkeypatch):
     assert calls == [("http://mcp.local/tools/convert_currency", {"amount": 1850, "from_currency": "USD", "to_currency": "INR"}, 8)]
 
 
+def test_currency_conversion_refreshes_backup_rates_once_daily(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("TRAVEL_AI_MCP_TOOLS_URL", "http://mcp.local/tools")
+    monkeypatch.setenv("TRAVEL_AI_CURRENCY_CACHE_PATH", str(tmp_path / "currency_rates.json"))
+
+    import httpx
+
+    def fake_post(url, json, timeout):
+        raise httpx.ConnectError("mcp unavailable")
+
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rates": {"INR": 91.5, "EUR": 0.94}}
+
+    def fake_get(url, params, timeout):
+        calls.append((url, params, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    first = client.post(
+        "/api/tools/currency-conversion",
+        json={"amount_usd": 1000, "to_currency": "INR"},
+        headers=_headers(),
+    )
+    second = client.post(
+        "/api/tools/currency-conversion",
+        json={"amount_usd": 2000, "to_currency": "INR"},
+        headers=_headers(),
+    )
+
+    assert first.status_code == 200
+    assert first.json()["amount"] == 91500
+    assert first.json()["source"] == "daily_backup_rate"
+    assert second.json()["amount"] == 183000
+    assert len(calls) == 1
+
+
 def test_trip_persistence_and_admin_summary(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     payload = _request_payload()
@@ -476,7 +567,19 @@ def test_chat_endpoint_uses_openrouter_and_records_audit(tmp_path, monkeypatch):
 
     response = client.post(
         "/api/agent/chat",
-        json={"message": "Do I need a visa?", "history": []},
+        json={
+            "message": "Do I need a visa?",
+            "history": [],
+            "budget_context": [
+                {
+                    "plan_id": "plan-1",
+                    "name": "Policy Fit",
+                    "estimated_total": 1800,
+                    "currency": "USD",
+                    "tradeoffs": "One stop flight"
+                }
+            ],
+        },
         headers=_headers(purpose="chat with travel assistant for compliant business travel"),
     )
 
@@ -488,6 +591,7 @@ def test_chat_endpoint_uses_openrouter_and_records_audit(tmp_path, monkeypatch):
     assert captured["json"]["model"] == "deepseek/deepseek-v4-flash"
     assert captured["json"]["provider"] == {"order": ["DeepSeek"], "allow_fallbacks": False}
     assert captured["json"]["stream"] is False
+    assert any("Policy Fit: estimated total 1800 USD" in message["content"] for message in captured["json"]["messages"])
 
     audit = client.get("/api/admin/audit", headers=_headers("admin.user@unipro.com", "review security audit events"))
     assert audit.status_code == 200

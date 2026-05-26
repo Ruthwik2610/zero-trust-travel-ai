@@ -1,26 +1,45 @@
+import hashlib
 import json
+import logging
 import os
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
+from .currency import convert_from_usd
+from .internal_logger import INTERNAL_LOGGER_NAME, log_internal_issue
 from .models import (
     AuditEvent,
     AuthContext,
     BudgetPolicyCheck,
     ChatRequest,
     ChatResponse,
+    CorporateFlightOffer,
+    CorporateGroundTransferOffer,
+    CorporateHotelOffer,
     CorporateTravelPlan,
     CorporateTravelRequest,
     FlightLeg,
     ItineraryItem,
     Offer,
     PlanResponse,
+    SupportedCurrency,
     TravelOption,
     TravelReadiness,
     TravelRequest,
     Trip,
 )
-from .security import risk_label
+from .privacy_gateway import anonymize_for_external_ai, assert_no_raw_pii, rehydrate_from_vault
+from .security import mask_sensitive_customer_text, risk_label
+
+
+CORPORATE_REVIEW_OPTION_COUNT = 3
+DEFAULT_TRANSFER_PICKUP_TIME = "09:00:00"
+DEFAULT_HOTEL_CHECK_IN_START = "15:00"
+DEFAULT_HOTEL_CHECKOUT_TIME = "11:00"
+SYNTHETIC_OUTBOUND_DEPARTURE_TIME = "09:10:00"
+SYNTHETIC_OUTBOUND_ARRIVAL_TIME = "17:35:00"
+SYNTHETIC_RETURN_DEPARTURE_TIME = "18:20:00"
+SYNTHETIC_RETURN_ARRIVAL_TIME = "23:55:00"
 
 
 def plan_trip(request: TravelRequest, owner_id: str = "", owner_department: str = "general") -> PlanResponse:
@@ -77,7 +96,11 @@ def generate_corporate_plan(
 ) -> CorporateTravelPlan:
     missing = _corporate_missing_information(request)
     nights = _corporate_nights(request)
-    options = _corporate_options(request, nights)
+    live_flights, live_hotels, live_transfers, provider_events = _corporate_live_provider_offers(request)
+    flight_offers = _corporate_flight_offers(request, live_flights)
+    hotel_offers = _corporate_hotel_offers(request, live_hotels, nights)
+    ground_transfer_offers = _corporate_ground_transfer_offers(request, live_transfers, hotel_offers)
+    options = _corporate_options(request, nights, flight_offers, hotel_offers, ground_transfer_offers)
     best_cost = options[0].estimated_cost
     readiness = _travel_readiness(request, visa_rule_rows or [])
     budget_check = _budget_policy_check(request, best_cost, policy_rows or [], options)
@@ -91,9 +114,12 @@ def generate_corporate_plan(
     history_note = _history_note(request, traveller_history_rows or [])
     request_summary = _request_summary(request)
     notes = [
-        "No live booking APIs were used; prices are deterministic planning estimates.",
+        *_corporate_provider_notes(request, flight_offers, live_hotels, ground_transfer_offers, provider_events),
         "Visa readiness is only verified when a matching provided visa rule exists.",
     ]
+    currency_note = _currency_conversion_note(request)
+    if currency_note:
+        notes.append(currency_note)
     if history_note:
         notes.append(history_note)
     if missing:
@@ -108,6 +134,12 @@ def generate_corporate_plan(
         travel_readiness=readiness,
         budget_policy_check=budget_check,
         travel_options=options,
+        flight_offers=flight_offers,
+        selected_flight_offer_id=flight_offers[0].id if flight_offers else None,
+        hotel_offers=hotel_offers,
+        selected_hotel_offer_id=hotel_offers[0].id if hotel_offers else None,
+        ground_transfer_offers=ground_transfer_offers,
+        selected_ground_transfer_offer_id=ground_transfer_offers[0].id if ground_transfer_offers else None,
         agent_note=_agent_note(readiness, budget_check, missing),
         agent_notes=notes,
         customer_message_draft=_customer_message(request, readiness, budget_check),
@@ -138,7 +170,7 @@ def _corporate_missing_information(request: CorporateTravelRequest) -> list[str]
         missing.append("travel_details.destination_country")
     if not travel.depart_date:
         missing.append("travel_details.depart_date")
-    if not travel.return_date:
+    if (travel.include_return_flight or travel.include_hotel) and not travel.return_date:
         missing.append("travel_details.return_date")
     if not budgets.total_budget:
         missing.append("budgets.total_budget")
@@ -181,8 +213,11 @@ def _enhance_corporate_plan_with_llm(
                 "travel_options": [
                     {
                         "option_name": "Best within budget",
+                        "flight_offer_id": "string | null",
+                        "ground_transfer_offer_id": "string | null",
                         "flight_summary": "string",
                         "hotel_summary": "string",
+                        "transfer_summary": "string",
                         "estimated_cost": 0,
                         "pros": [],
                         "cons": [],
@@ -190,6 +225,12 @@ def _enhance_corporate_plan_with_llm(
                         "recommendation_reason": "string",
                     }
                 ],
+                "flight_offers": [],
+                "selected_flight_offer_id": "string | null",
+                "hotel_offers": [],
+                "selected_hotel_offer_id": "string | null",
+                "ground_transfer_offers": [],
+                "selected_ground_transfer_offer_id": "string | null",
                 "agent_note": "string",
                 "agent_notes": [],
                 "customer_message_draft": "string",
@@ -197,6 +238,8 @@ def _enhance_corporate_plan_with_llm(
                 "approval_status": "Plan Generated",
             },
         }
+        anonymized = anonymize_for_external_ai(payload)
+        assert_no_raw_pii(anonymized.payload, anonymized.token_map)
         text = _chat_completion(
             [
                 {
@@ -209,35 +252,63 @@ def _enhance_corporate_plan_with_llm(
                         "unless verified by supplied rule data. Do not create bookings or payment instructions."
                     ),
                 },
-                {"role": "user", "content": json.dumps(payload, default=str)},
+                {"role": "user", "content": json.dumps(anonymized.payload, default=str)},
             ],
             max_tokens=1800,
             json_response=True,
         )
-        llm_plan = CorporateTravelPlan.model_validate(json.loads(_extract_json_object(text)))
+        llm_payload = rehydrate_from_vault(json.loads(_extract_json_object(text)), anonymized.token_map)
+        llm_plan = CorporateTravelPlan.model_validate(llm_payload)
         safe_options = []
         for index, option in enumerate(llm_plan.travel_options):
             base_option = base_plan.travel_options[index] if index < len(base_plan.travel_options) else option
+            component_updates: dict[str, Any] = {}
+            if not request.travel_details.include_outbound_flight or not request.travel_details.include_return_flight:
+                component_updates["flight_summary"] = base_option.flight_summary
+            if not request.travel_details.include_hotel:
+                component_updates["hotel_summary"] = base_option.hotel_summary
             safe_options.append(
                 option.model_copy(
                     update={
                         "option_name": base_option.option_name,
+                        "flight_offer_id": base_option.flight_offer_id,
+                        "ground_transfer_offer_id": base_option.ground_transfer_offer_id,
                         "estimated_cost": base_option.estimated_cost,
                         "policy_status": base_option.policy_status,
+                        **component_updates,
                     }
                 )
             )
+        customer_itinerary = mask_sensitive_customer_text(llm_plan.customer_itinerary_draft)
+        if not request.travel_details.include_hotel or not request.travel_details.include_outbound_flight or not request.travel_details.include_return_flight:
+            customer_itinerary = base_plan.customer_itinerary_draft
         return llm_plan.model_copy(
             update={
                 "missing_information": base_plan.missing_information,
                 "travel_readiness": base_plan.travel_readiness,
                 "budget_policy_check": base_plan.budget_policy_check,
                 "travel_options": safe_options,
+                "flight_offers": base_plan.flight_offers,
+                "selected_flight_offer_id": base_plan.selected_flight_offer_id,
+                "hotel_offers": base_plan.hotel_offers,
+                "selected_hotel_offer_id": base_plan.selected_hotel_offer_id,
+                "ground_transfer_offers": base_plan.ground_transfer_offers,
+                "selected_ground_transfer_offer_id": base_plan.selected_ground_transfer_offer_id,
                 "approval_status": base_plan.approval_status,
+                "customer_message_draft": mask_sensitive_customer_text(llm_plan.customer_message_draft),
+                "customer_itinerary_draft": customer_itinerary,
                 "agent_notes": [*llm_plan.agent_notes, f"{_llm_provider_name()} generated the narrative draft; deterministic rules kept document, budget, policy, and approval statuses."],
             }
         )
     except Exception as exc:
+        log_internal_issue(
+            logging.getLogger(INTERNAL_LOGGER_NAME),
+            "corporate.llm_enhancement.failed",
+            f"{_llm_provider_name()} planning enhancement failed.",
+            error=exc,
+            provider=_llm_provider_name(),
+            request_id=request.id,
+        )
         return base_plan.model_copy(
             update={
                 "agent_notes": [
@@ -255,10 +326,13 @@ def _request_summary(request: CorporateTravelRequest) -> str:
     depart = request.travel_details.depart_date.isoformat() if request.travel_details.depart_date else "date pending"
     ret = request.travel_details.return_date.isoformat() if request.travel_details.return_date else "return pending"
     purpose = request.travel_details.trip_purpose or "business travel"
-    return f"{traveller} needs {purpose} travel from {origin} to {destination}, departing {depart} and returning {ret}."
+    components = _component_summary(request)
+    return f"{traveller} needs {purpose} travel from {origin} to {destination}, departing {depart} and returning {ret}. Components: {components}."
 
 
 def _corporate_nights(request: CorporateTravelRequest) -> int:
+    if not request.travel_details.include_hotel:
+        return 0
     depart = request.travel_details.depart_date
     ret = request.travel_details.return_date
     if not depart or not ret:
@@ -266,31 +340,495 @@ def _corporate_nights(request: CorporateTravelRequest) -> int:
     return max(1, (ret - depart).days)
 
 
-def _corporate_options(request: CorporateTravelRequest, nights: int) -> list[TravelOption]:
+def _corporate_trip_request(request: CorporateTravelRequest) -> TravelRequest | None:
+    travel = request.travel_details
+    if not (travel.include_outbound_flight or travel.include_return_flight):
+        return None
+    if not (travel.origin and travel.destination):
+        return None
+    if travel.include_outbound_flight and not travel.depart_date:
+        return None
+    if not travel.include_outbound_flight and travel.include_return_flight and not travel.return_date:
+        return None
+
+    origin = travel.origin
+    destination = travel.destination
+    depart_date = travel.depart_date
+    return_date = travel.return_date if travel.include_return_flight else None
+    if not travel.include_outbound_flight and travel.include_return_flight:
+        origin = travel.destination
+        destination = travel.origin
+        depart_date = travel.return_date
+        return_date = None
+
+    return TravelRequest(
+        origin=origin,
+        destination=destination,
+        depart_date=depart_date,
+        return_date=return_date,
+        travelers=travel.travelers,
+        cabin=travel.cabin,
+        budget_usd=request.budgets.total_budget if request.budgets.currency.upper() == "USD" else None,
+        purpose=travel.trip_purpose,
+    )
+
+
+def _corporate_live_provider_offers(request: CorporateTravelRequest) -> tuple[list[Offer], list[Offer], list[CorporateGroundTransferOffer], list[AuditEvent]]:
+    trip_request = _corporate_trip_request(request)
+    if not trip_request:
+        return [], [], [], []
+    flights, hotels, events = _live_provider_offers(trip_request, request.owner_id)
+    events.append(AuditEvent(
+        actor_id=request.owner_id or None,
+        event_type="synthetic.transfer.generated",
+        message="Synthetic airport transfer options selected for POC planning.",
+    ))
+    return (
+        flights if (request.travel_details.include_outbound_flight or request.travel_details.include_return_flight) else [],
+        hotels if request.travel_details.include_hotel else [],
+        [],
+        events,
+    )
+
+
+def _transfer_airport_code(request: CorporateTravelRequest) -> str:
+    value = request.travel_details.destination or ""
+    if len(value.strip()) == 3 and value.strip().isalpha():
+        return value.strip().upper()
+    return CITY_IATA.get(_norm(value), value.strip().upper()[:3] or "AIR")
+
+
+def _transfer_pickup_time(request: CorporateTravelRequest) -> str:
+    depart = request.travel_details.depart_date
+    if not depart:
+        raise RuntimeError("Transfer pickup date is missing")
+    return f"{depart.isoformat()}T{DEFAULT_TRANSFER_PICKUP_TIME}"
+
+
+def _corporate_flight_offers(request: CorporateTravelRequest, live_offers: list[Offer] | None = None) -> list[CorporateFlightOffer]:
+    travel = request.travel_details
+    if not (travel.include_outbound_flight or travel.include_return_flight):
+        return []
+    if not (travel.origin and travel.destination):
+        return []
+
+    trip_request = _corporate_trip_request(request)
+    live_offers = list(live_offers or [])
+    if not live_offers:
+        estimated = _corporate_flight_estimate(request)
+        if not trip_request:
+            return []
+        live_offers = [
+            _fallback_flight_offer(trip_request).model_copy(update={
+                "id": f"offer_synthetic_budget_{uuid_suffix(travel.origin, travel.destination)}",
+                "title": f"Best within budget option · {travel.origin.upper()} -> {travel.destination}",
+                "provider": "synthetic-duffel/budget",
+                "price_usd": int(estimated * 0.92),
+                "notes": ["Synthetic MVP flight option shaped like a Duffel offer.", "No booking or payment has been created."],
+            }),
+            _fallback_flight_offer(trip_request).model_copy(update={
+                "id": f"offer_synthetic_fast_{uuid_suffix(travel.origin, travel.destination)}",
+                "title": f"Fastest practical option · {travel.origin.upper()} -> {travel.destination}",
+                "provider": "synthetic-duffel/fastest",
+                "price_usd": int(estimated * 1.12),
+                "notes": ["Synthetic MVP flight option shaped like a Duffel offer.", "No booking or payment has been created."],
+            }),
+            _fallback_flight_offer(trip_request).model_copy(update={
+                "id": f"offer_synthetic_comfort_{uuid_suffix(travel.origin, travel.destination)}",
+                "title": f"Comfort-focused option · {travel.origin.upper()} -> {travel.destination}",
+                "provider": "synthetic-duffel/comfort",
+                "price_usd": int(estimated * 1.3),
+                "notes": ["Synthetic MVP flight option shaped like a Duffel offer.", "No booking or payment has been created."],
+            }),
+        ]
+    return [_corporate_flight_offer_from_offer(offer, request) for offer in live_offers[:4]]
+
+
+def _corporate_provider_notes(
+    request: CorporateTravelRequest,
+    flight_offers: list[CorporateFlightOffer],
+    hotel_offers: list[Offer],
+    ground_transfer_offers: list[CorporateGroundTransferOffer],
+    events: list[AuditEvent],
+) -> list[str]:
+    notes: list[str] = []
+    if not (request.travel_details.include_outbound_flight or request.travel_details.include_return_flight):
+        notes.append("Flight search skipped because the request form excluded flight planning.")
+    elif any(offer.source == "duffel" for offer in flight_offers):
+        providers = ", ".join(sorted({offer.provider for offer in flight_offers if offer.source == "duffel"}))
+        notes.append(f"Live Duffel flight offers are attached for agent review ({providers}).")
+    else:
+        notes.append("Live Duffel flight search is unavailable; flight options require manual sourcing before ticketing.")
+
+    if not request.travel_details.include_hotel:
+        notes.append("Hotel search skipped because the request form excluded hotel planning.")
+    elif hotel_offers:
+        providers = ", ".join(sorted({offer.provider for offer in hotel_offers}))
+        notes.append(f"Live Booking.com hotel offers informed the hotel summaries ({providers}).")
+    else:
+        notes.append("Live Booking.com hotel search is unavailable; hotel options require manual sourcing before confirmation.")
+
+    if ground_transfer_offers:
+        notes.append("Synthetic airport transfer options are generated for POC planning variation; no supplier search or booking has been performed.")
+    else:
+        notes.append("Airport transfer options require a destination and travel date before planning.")
+
+    unavailable = [event.event_type for event in events if event.event_type.endswith(".unavailable")]
+    if unavailable:
+        notes.append(f"Provider availability recorded for audit: {', '.join(unavailable)}.")
+    return notes
+
+
+def _corporate_flight_offer_from_offer(offer: Offer, request: CorporateTravelRequest) -> CorporateFlightOffer:
+    legs = offer.flight_legs or []
+    outbound = _leg_summary(legs[0]) if legs else f"{request.travel_details.origin or 'Origin'} to {request.travel_details.destination or 'destination'}"
+    return_leg = _leg_summary(legs[1]) if len(legs) > 1 else None
+    source = "duffel" if offer.provider.startswith("duffel-api/") or offer.provider.startswith("duffel-mcp/") else "synthetic"
+    return CorporateFlightOffer(
+        id=_source_offer_id(offer),
+        provider=offer.provider,
+        airline=_airline_from_offer(offer),
+        summary=offer.title,
+        total_amount=offer.price_usd,
+        currency=offer.currency,
+        outbound=outbound,
+        return_leg=return_leg,
+        cabin=request.travel_details.cabin,
+        expires_at=_note_value(offer.notes, "Expires at:"),
+        source=source,
+        notes=offer.notes,
+    )
+
+
+def _corporate_hotel_offers(request: CorporateTravelRequest, live_offers: list[Offer] | None, nights: int) -> list[CorporateHotelOffer]:
+    if not request.travel_details.include_hotel:
+        return []
+    offers = list(live_offers or [])
+    if not offers:
+        destination = request.travel_details.destination or "the destination"
+        area = request.preferences.preferred_hotel_area or request.preferences.hotel_preference or "business district"
+        base = _corporate_hotel_estimate(request, nights)
+        return [
+            CorporateHotelOffer(
+                id=f"hotel_synthetic_business_{uuid_suffix(destination, area)}",
+                provider="synthetic-booking/business",
+                name=f"Business Stay near {destination}",
+                summary=f"Business-ready hotel in {area} with refundable planning assumptions.",
+                total_amount=max(base, 1),
+                currency=request.budgets.currency or "USD",
+                address=area,
+                star_rating=_hotel_star_from_preference(request.preferences.hotel_star_rating) or 4,
+                check_in=request.travel_details.depart_date,
+                check_out=request.travel_details.return_date,
+                check_in_starts_at=DEFAULT_HOTEL_CHECK_IN_START,
+                checkout_time=DEFAULT_HOTEL_CHECKOUT_TIME,
+                room_notes="Standard corporate room; bedding and loyalty preferences require hotel confirmation.",
+                cancellation_notes="Cancellation rules must be verified before confirmation.",
+                unsent_special_requests=request.special_requests,
+                nights=nights,
+                rooms=1,
+                guests=request.travel_details.travelers,
+                image_url="/travel-media/hotel-business.png",
+                source="synthetic",
+                notes=["Synthetic hotel option for planning only.", "No hotel booking or payment has been created."],
+            ),
+            CorporateHotelOffer(
+                id=f"hotel_synthetic_office_{uuid_suffix(destination, area, 'office')}",
+                provider="synthetic-booking/office",
+                name=f"Office Proximity Hotel",
+                summary="Prioritizes commute simplicity and meeting-day reliability.",
+                total_amount=max(int(base * 1.08), 1),
+                currency=request.budgets.currency or "USD",
+                address=area,
+                star_rating=4,
+                check_in=request.travel_details.depart_date,
+                check_out=request.travel_details.return_date,
+                check_in_starts_at=DEFAULT_HOTEL_CHECK_IN_START,
+                checkout_time=DEFAULT_HOTEL_CHECKOUT_TIME,
+                room_notes="Standard corporate room; bedding and loyalty preferences require hotel confirmation.",
+                cancellation_notes="Cancellation rules must be verified before confirmation.",
+                unsent_special_requests=request.special_requests,
+                nights=nights,
+                rooms=1,
+                guests=request.travel_details.travelers,
+                image_url="/travel-media/hotel-city.png",
+                source="synthetic",
+                notes=["Synthetic hotel option for planning only.", "No hotel booking or payment has been created."],
+            ),
+            CorporateHotelOffer(
+                id=f"hotel_synthetic_flex_{uuid_suffix(destination, area, 'flex')}",
+                provider="synthetic-booking/flexible",
+                name=f"Flexible Corporate Stay",
+                summary="Higher buffer option with stronger cancellation flexibility for disruption recovery.",
+                total_amount=max(int(base * 1.18), 1),
+                currency=request.budgets.currency or "USD",
+                address=area,
+                star_rating=5,
+                check_in=request.travel_details.depart_date,
+                check_out=request.travel_details.return_date,
+                check_in_starts_at=DEFAULT_HOTEL_CHECK_IN_START,
+                checkout_time=DEFAULT_HOTEL_CHECKOUT_TIME,
+                room_notes="Enhanced corporate room assumption; final room type requires hotel confirmation.",
+                cancellation_notes="Flexible cancellation assumption must be verified before confirmation.",
+                unsent_special_requests=request.special_requests,
+                nights=nights,
+                rooms=1,
+                guests=request.travel_details.travelers,
+                image_url="/travel-media/hotel-lobby.png",
+                source="synthetic",
+                notes=["Synthetic hotel option for planning only.", "No hotel booking or payment has been created."],
+            ),
+        ]
+    return [_corporate_hotel_offer_from_offer(offer, request, nights) for offer in offers[:4]]
+
+
+def _corporate_hotel_offer_from_offer(offer: Offer, request: CorporateTravelRequest, nights: int) -> CorporateHotelOffer:
+    source = "booking" if offer.provider.startswith("booking.com") else "synthetic"
+    return CorporateHotelOffer(
+        id=_source_offer_id(offer),
+        provider=offer.provider,
+        name=offer.title,
+        summary=_corporate_hotel_summary(offer, offer.title, nights, "business amenities"),
+        total_amount=max(offer.price_usd, 1),
+        currency=offer.currency,
+        address=_hotel_address_from_notes(offer.notes),
+        star_rating=_hotel_star_from_notes(offer.notes),
+        check_in=request.travel_details.depart_date,
+        check_out=request.travel_details.return_date,
+        check_in_starts_at=DEFAULT_HOTEL_CHECK_IN_START,
+        checkout_time=DEFAULT_HOTEL_CHECKOUT_TIME,
+        room_notes="Room type, bedding, and loyalty benefits require hotel confirmation.",
+        cancellation_notes="Provider cancellation terms must be verified before confirmation.",
+        unsent_special_requests=request.special_requests,
+        nights=nights,
+        rooms=1,
+        guests=request.travel_details.travelers,
+        image_url=_note_value(offer.notes, "Photo URL:") or "/travel-media/hotel-business.png",
+        source=source,
+        notes=offer.notes,
+    )
+
+
+def _corporate_ground_transfer_offers(
+    request: CorporateTravelRequest,
+    live_offers: list[CorporateGroundTransferOffer],
+    hotel_offers: list[CorporateHotelOffer],
+) -> list[CorporateGroundTransferOffer]:
+    if not request.travel_details.destination or not request.travel_details.depart_date:
+        return []
+    offers = list(live_offers)
+    if offers:
+        return offers[:CORPORATE_REVIEW_OPTION_COUNT]
+
+    airport = _transfer_airport_code(request)
+    dropoff_hotel = hotel_offers[0] if hotel_offers else None
+    dropoff_label = dropoff_hotel.name if dropoff_hotel else (request.travel_details.meeting_location or "Hotel or meeting location")
+    dropoff_address = dropoff_hotel.address if dropoff_hotel else (request.travel_details.meeting_location or request.preferences.preferred_hotel_area)
+    base = _corporate_transfer_estimate(request)
+    pickup_time = _transfer_pickup_time(request)
+    passengers = request.travel_details.travelers
+    currency = request.budgets.currency or "USD"
+    return [
+        CorporateGroundTransferOffer(
+            id=f"transfer_synthetic_sedan_{uuid_suffix(request.id, airport)}",
+            provider="Johannesburg Airport Cars",
+            pickup_airport_code=airport,
+            pickup_time=pickup_time,
+            dropoff_label=dropoff_label,
+            dropoff_address=dropoff_address,
+            service_type="PRIVATE",
+            vehicle_type="Business sedan",
+            passengers=passengers,
+            baggage="1 checked bag and 1 carry-on per traveler",
+            total_amount=max(base, 1),
+            currency=currency,
+            cancellation_notes="Free cancellation assumed until 24 hours before pickup; verify before confirmation.",
+            source="synthetic",
+            notes=[
+                "POC synthetic transfer shaped like a car-service quote.",
+                "Meet driver at arrivals with name-board assumption.",
+                "No transfer order or payment has been created.",
+            ],
+        ),
+        CorporateGroundTransferOffer(
+            id=f"transfer_synthetic_priority_{uuid_suffix(request.id, airport, 'priority')}",
+            provider="Sandton Executive Transfers",
+            pickup_airport_code=airport,
+            pickup_time=pickup_time,
+            dropoff_label=dropoff_label,
+            dropoff_address=dropoff_address,
+            service_type="MEET_AND_GREET",
+            vehicle_type="Priority sedan",
+            passengers=passengers,
+            baggage="Includes meet-and-greet and 60 minutes airport waiting time",
+            total_amount=max(int(base * 1.2), 1),
+            currency=currency,
+            cancellation_notes="Partial fee assumed inside 12 hours of pickup; verify provider rules.",
+            source="synthetic",
+            notes=[
+                "POC synthetic transfer with priority pickup posture.",
+                "Best fit when executives need a shorter airport handoff.",
+                "No transfer order or payment has been created.",
+            ],
+        ),
+        CorporateGroundTransferOffer(
+            id=f"transfer_synthetic_suv_{uuid_suffix(request.id, airport, 'suv')}",
+            provider="Corporate Chauffeur Desk",
+            pickup_airport_code=airport,
+            pickup_time=pickup_time,
+            dropoff_label=dropoff_label,
+            dropoff_address=dropoff_address,
+            service_type="PRIVATE",
+            vehicle_type="Executive SUV",
+            passengers=passengers,
+            baggage="Extra luggage buffer for 2 checked bags per traveler",
+            total_amount=max(int(base * 1.45), 1),
+            currency=currency,
+            cancellation_notes="Higher no-show fee assumed; verify before issuing final booking instruction.",
+            source="synthetic",
+            notes=[
+                "POC synthetic transfer for higher comfort and luggage capacity.",
+                "Use when senior traveler comfort matters more than lowest cost.",
+                "No transfer order or payment has been created.",
+            ],
+        ),
+    ]
+
+
+def _hotel_address_from_notes(notes: list[str]) -> str | None:
+    for note in notes:
+        lowered = note.lower()
+        if (
+            note
+            and "source:" not in lowered
+            and "booking link:" not in lowered
+            and "photo url:" not in lowered
+            and "accommodation id:" not in lowered
+            and "review " not in lowered
+            and "-star" not in lowered
+            and "/ night" not in lowered
+        ):
+            return note
+    return None
+
+
+def _hotel_star_from_notes(notes: list[str]) -> float | None:
+    for note in notes:
+        if "-star" in note:
+            try:
+                return float(note.split("-star", 1)[0].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _hotel_star_from_preference(value: str | None) -> float | None:
+    if not value:
+        return None
+    for token in value.replace("+", " ").split():
+        try:
+            return float(token)
+        except ValueError:
+            continue
+    return None
+
+
+def _leg_summary(leg: FlightLeg) -> str:
+    stops = f"{leg.stops} stop(s)" if leg.stops is not None else "stops pending"
+    timing = ""
+    if leg.departure_at or leg.arrival_at:
+        timing = f" · {leg.departure_at or 'departure pending'} to {leg.arrival_at or 'arrival pending'}"
+    carrier = f" · {leg.airline}" if leg.airline else ""
+    return f"{leg.origin} -> {leg.destination}{carrier} · {stops}{timing}"
+
+
+def _source_offer_id(offer: Offer) -> str:
+    return _note_value(offer.notes, "Offer ID:") or offer.id
+
+
+def _airline_from_offer(offer: Offer) -> str:
+    return offer.title.split("·", 1)[0].strip() or "Flight option"
+
+
+def _note_value(notes: list[str], prefix: str) -> str | None:
+    for note in notes:
+        if note.startswith(prefix):
+            return note.removeprefix(prefix).strip()
+    return None
+
+
+def uuid_suffix(*parts: str | None) -> str:
+    text = "-".join(part or "" for part in parts)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+
+
+def _corporate_options(
+    request: CorporateTravelRequest,
+    nights: int,
+    flight_offers: list[CorporateFlightOffer],
+    hotel_offers: list[CorporateHotelOffer] | None = None,
+    ground_transfer_offers: list[CorporateGroundTransferOffer] | None = None,
+) -> list[TravelOption]:
     flight_base = _corporate_flight_estimate(request)
     hotel_base = _corporate_hotel_estimate(request, nights)
+    transfer_base = _corporate_transfer_estimate(request)
     cabin = request.travel_details.cabin.replace("_", " ")
     destination = request.travel_details.destination or "destination"
     airline = request.preferences.preferred_airline or "major carrier"
     hotel = request.preferences.hotel_preference or "business hotel"
-    best_cost = int(flight_base * 0.92 + hotel_base)
-    fastest_cost = int(flight_base * 1.12 + hotel_base * 1.05)
-    comfort_cost = int(flight_base * 1.3 + hotel_base * 1.18)
+    hotel_offers = hotel_offers or []
+    ground_transfer_offers = ground_transfer_offers or []
+    best_flight = flight_offers[0] if len(flight_offers) > 0 else None
+    fastest_flight = flight_offers[1] if len(flight_offers) > 1 else None
+    comfort_flight = flight_offers[2] if len(flight_offers) > 2 else None
+    best_hotel = hotel_offers[0] if len(hotel_offers) > 0 else None
+    fastest_hotel = hotel_offers[1] if len(hotel_offers) > 1 else best_hotel
+    comfort_hotel = hotel_offers[2] if len(hotel_offers) > 2 else (fastest_hotel or best_hotel)
+    best_transfer = ground_transfer_offers[0] if len(ground_transfer_offers) > 0 else None
+    fastest_transfer = ground_transfer_offers[1] if len(ground_transfer_offers) > 1 else best_transfer
+    comfort_transfer = ground_transfer_offers[2] if len(ground_transfer_offers) > 2 else (fastest_transfer or best_transfer)
+    best_flight_cost = best_flight.total_amount if best_flight else int(flight_base * 0.92)
+    fastest_flight_cost = fastest_flight.total_amount if fastest_flight else int(flight_base * 1.12)
+    comfort_flight_cost = comfort_flight.total_amount if comfort_flight else int(flight_base * 1.3)
+    best_hotel_cost = best_hotel.total_amount if best_hotel else hotel_base
+    fastest_hotel_cost = fastest_hotel.total_amount if fastest_hotel else int(hotel_base * 1.05)
+    comfort_hotel_cost = comfort_hotel.total_amount if comfort_hotel else int(hotel_base * 1.18)
+    best_transfer_cost = best_transfer.total_amount if best_transfer else transfer_base
+    fastest_transfer_cost = fastest_transfer.total_amount if fastest_transfer else int(transfer_base * 1.2)
+    comfort_transfer_cost = comfort_transfer.total_amount if comfort_transfer else int(transfer_base * 1.45)
+    best_cost = _convert_planning_cost(best_flight_cost + best_hotel_cost + best_transfer_cost, request)
+    fastest_cost = _convert_planning_cost(fastest_flight_cost + fastest_hotel_cost + fastest_transfer_cost, request)
+    comfort_cost = _convert_planning_cost(comfort_flight_cost + comfort_hotel_cost + comfort_transfer_cost, request)
+    best_flight_summary = _flight_summary_for_components(request, best_flight.summary if best_flight else f"Round-trip {cabin} routing to {destination} on a cost-controlled {airline} option.")
+    fastest_flight_summary = _flight_summary_for_components(request, fastest_flight.summary if fastest_flight else f"Fastest practical {cabin} routing to {destination} with fewer or shorter connections.")
+    comfort_flight_summary = _flight_summary_for_components(request, comfort_flight.summary if comfort_flight else f"Comfort-optimized {cabin} routing with better connection buffers.")
+    best_hotel_summary = _hotel_summary_for_components(request, _corporate_hotel_summary(best_hotel, hotel, nights, "standard business amenities"))
+    fastest_hotel_summary = _hotel_summary_for_components(request, _corporate_hotel_summary(fastest_hotel, hotel, nights, "close to the primary business area"))
+    comfort_hotel_summary = _hotel_summary_for_components(request, _corporate_hotel_summary(comfort_hotel, f"Upgraded {hotel} option", nights, "stronger rest and work amenities"))
+    best_transfer_summary = _corporate_transfer_summary(best_transfer, "Standard private airport transfer")
+    fastest_transfer_summary = _corporate_transfer_summary(fastest_transfer, "Priority airport pickup transfer")
+    comfort_transfer_summary = _corporate_transfer_summary(comfort_transfer, "Executive airport transfer")
     return [
         TravelOption(
             option_name="Best within budget",
-            flight_summary=f"Round-trip {cabin} routing to {destination} on a cost-controlled {airline} option.",
-            hotel_summary=f"{hotel} for {nights} night(s) with standard business amenities.",
+            flight_offer_id=best_flight.id if best_flight else None,
+            ground_transfer_offer_id=best_transfer.id if best_transfer else None,
+            flight_summary=best_flight_summary,
+            hotel_summary=best_hotel_summary,
+            transfer_summary=best_transfer_summary,
             estimated_cost=best_cost,
             pros=["Lowest estimated total", "Balanced schedule", "Best first option for budget review"],
             cons=["May include one connection", "Seat and fare class need confirmation before ticketing"],
             policy_status="Compliant pending document review",
-            recommendation_reason="Best balance of cost, schedule, and corporate policy.",
+            recommendation_reason="Best balance of cost, schedule, ground transfer coverage, and corporate policy.",
         ),
         TravelOption(
             option_name="Fastest route",
-            flight_summary=f"Fastest practical {cabin} routing to {destination} with fewer or shorter connections.",
-            hotel_summary=f"{hotel} close to the primary business area.",
+            flight_offer_id=fastest_flight.id if fastest_flight else None,
+            ground_transfer_offer_id=fastest_transfer.id if fastest_transfer else None,
+            flight_summary=fastest_flight_summary,
+            hotel_summary=fastest_hotel_summary,
+            transfer_summary=fastest_transfer_summary,
             estimated_cost=fastest_cost,
             pros=["Shortest travel time", "Lower disruption risk"],
             cons=["Higher fare estimate", "May need approval if above budget"],
@@ -299,8 +837,11 @@ def _corporate_options(request: CorporateTravelRequest, nights: int) -> list[Tra
         ),
         TravelOption(
             option_name="Comfort-focused option",
-            flight_summary=f"Comfort-optimized {cabin} routing with better connection buffers.",
-            hotel_summary=f"Upgraded {hotel} option with stronger rest and work amenities.",
+            flight_offer_id=comfort_flight.id if comfort_flight else None,
+            ground_transfer_offer_id=comfort_transfer.id if comfort_transfer else None,
+            flight_summary=comfort_flight_summary,
+            hotel_summary=comfort_hotel_summary,
+            transfer_summary=comfort_transfer_summary,
             estimated_cost=comfort_cost,
             pros=["Better rest profile", "More flexible planning buffers"],
             cons=["Highest estimated cost", "Most likely to require approval"],
@@ -310,21 +851,111 @@ def _corporate_options(request: CorporateTravelRequest, nights: int) -> list[Tra
     ]
 
 
+def _corporate_hotel_summary(offer: Offer | CorporateHotelOffer | None, fallback: str, nights: int, qualifier: str) -> str:
+    if not offer:
+        return f"{fallback} for {nights} night(s) with {qualifier}."
+    if isinstance(offer, CorporateHotelOffer):
+        return f"{offer.name} via {offer.provider} for {nights} night(s), estimated {offer.total_amount} {offer.currency}."
+    return f"{offer.title} via {offer.provider} for {nights} night(s), estimated {offer.price_usd} {offer.currency}."
+
+
+def _corporate_transfer_summary(offer: CorporateGroundTransferOffer | None, fallback: str) -> str:
+    if not offer:
+        return f"{fallback}; provider confirmation required before pickup."
+    pickup_time = f" at {offer.pickup_time}" if offer.pickup_time else ""
+    vehicle = f" in {offer.vehicle_type}" if offer.vehicle_type else ""
+    return (
+        f"{offer.service_type.title()} transfer from {offer.pickup_airport_code} to {offer.dropoff_label}"
+        f"{pickup_time}{vehicle}, estimated {offer.total_amount} {offer.currency}."
+    )
+
+
+def _component_summary(request: CorporateTravelRequest) -> str:
+    travel = request.travel_details
+    included = []
+    skipped = []
+    for enabled, label in (
+        (travel.include_outbound_flight, "outbound flight"),
+        (travel.include_return_flight, "return flight"),
+        (travel.include_hotel, "hotel"),
+    ):
+        (included if enabled else skipped).append(label)
+    included_text = ", ".join(included) if included else "no travel components"
+    if not skipped:
+        return included_text
+    return f"{included_text}; skipped {', '.join(skipped)}"
+
+
+def _flight_summary_for_components(request: CorporateTravelRequest, fallback: str) -> str:
+    travel = request.travel_details
+    if not travel.include_outbound_flight and not travel.include_return_flight:
+        return "Flights excluded by request form."
+    if not travel.include_outbound_flight:
+        return f"Outbound flight excluded by request form. Return flight planned from {travel.destination or 'destination'} to {travel.origin or 'origin'}."
+    if not travel.include_return_flight:
+        return f"{fallback} Return flight excluded by request form."
+    return fallback
+
+
+def _hotel_summary_for_components(request: CorporateTravelRequest, fallback: str) -> str:
+    if not request.travel_details.include_hotel:
+        return "Hotel excluded by request form."
+    return fallback
+
+
+def _planning_currency(request: CorporateTravelRequest) -> SupportedCurrency:
+    currency = str(request.budgets.currency or "USD").upper()
+    if currency in {"USD", "INR", "EUR", "GBP", "CAD", "AUD", "JPY", "ZAR"}:
+        return cast(SupportedCurrency, currency)
+    return "USD"
+
+
+def _convert_planning_cost(amount_usd: int, request: CorporateTravelRequest) -> int:
+    currency = _planning_currency(request)
+    if currency == "USD":
+        return int(amount_usd)
+    return int(round(convert_from_usd(max(int(amount_usd), 0), currency).amount))
+
+
+def _currency_conversion_note(request: CorporateTravelRequest) -> str | None:
+    currency = _planning_currency(request)
+    if currency == "USD":
+        return None
+    source = convert_from_usd(1, currency).source
+    if source == "mcp":
+        return f"MCP currency conversion applied for {currency} itinerary estimates."
+    if source == "daily_backup_rate":
+        return f"Daily backup currency rate applied for {currency} itinerary estimates because MCP conversion was unavailable."
+    return f"Static backend currency backup applied for {currency} itinerary estimates because MCP and daily rate refresh were unavailable."
+
+
 def _corporate_flight_estimate(request: CorporateTravelRequest) -> int:
+    if not (request.travel_details.include_outbound_flight or request.travel_details.include_return_flight):
+        return 0
     cabin_multiplier = {"economy": 1.0, "premium_economy": 1.35, "business": 2.4, "first": 3.5}[request.travel_details.cabin]
     origin = (request.travel_details.origin or "").lower()
     destination = (request.travel_details.destination or "").lower()
     country = (request.travel_details.destination_country or "").lower()
     long_haul = any(marker in f"{origin} {destination} {country}" for marker in ("johannesburg", "south africa", "tokyo", "london", "san francisco", "new york"))
     base = 1350 if long_haul else 650
-    return int(base * cabin_multiplier * request.travel_details.travelers)
+    segment_multiplier = 1.0 if (request.travel_details.include_outbound_flight and request.travel_details.include_return_flight) else 0.58
+    return int(base * cabin_multiplier * request.travel_details.travelers * segment_multiplier)
 
 
 def _corporate_hotel_estimate(request: CorporateTravelRequest, nights: int) -> int:
+    if not request.travel_details.include_hotel:
+        return 0
     destination = (request.travel_details.destination or "").lower()
     country = (request.travel_details.destination_country or "").lower()
     nightly = 185 if "johannesburg" in destination or "south africa" in country else 160
     return nightly * nights
+
+
+def _corporate_transfer_estimate(request: CorporateTravelRequest) -> int:
+    destination = (request.travel_details.destination or "").lower()
+    country = (request.travel_details.destination_country or "").lower()
+    base = 85 if "johannesburg" in destination or "south africa" in country else 70
+    return base * max(request.travel_details.travelers, 1)
 
 
 def _travel_readiness(request: CorporateTravelRequest, visa_rules: list[dict[str, object]]) -> TravelReadiness:
@@ -467,10 +1098,21 @@ def _customer_itinerary(request: CorporateTravelRequest, option: TravelOption, n
     destination = request.travel_details.destination or "destination pending"
     depart = request.travel_details.depart_date.isoformat() if request.travel_details.depart_date else "date pending"
     ret = request.travel_details.return_date.isoformat() if request.travel_details.return_date else "return pending"
-    return (
-        f"{option.option_name}: depart {origin} on {depart}, stay in {destination} for {nights} night(s), "
-        f"and return on {ret}. Estimated total: ${option.estimated_cost}."
-    )
+    segments: list[str] = []
+    if request.travel_details.include_outbound_flight:
+        segments.append(f"depart {origin} for {destination} on {depart}")
+    else:
+        segments.append("outbound flight excluded")
+    if request.travel_details.include_hotel:
+        segments.append(f"stay in {destination} for {nights} night(s)")
+    else:
+        segments.append("hotel excluded")
+    segments.append(option.transfer_summary)
+    if request.travel_details.include_return_flight:
+        segments.append(f"return on {ret}")
+    else:
+        segments.append("return flight excluded")
+    return f"{option.option_name}: {', '.join(segments)}. Estimated total: {_planning_currency(request)} {option.estimated_cost}."
 
 
 def _history_note(request: CorporateTravelRequest, rows: list[dict[str, object]]) -> str:
@@ -753,6 +1395,50 @@ def chat_with_travel_ai(request: ChatRequest, context: AuthContext, purpose: str
                 ),
             }
         )
+    if request.budget_context:
+        budget_lines = []
+        for item in request.budget_context:
+            name = str(item.get("name") or "Plan")
+            amount = item.get("estimated_total")
+            currency = str(item.get("currency") or "")
+            tradeoffs = str(item.get("tradeoffs") or "")
+            budget_lines.append(f"{name}: estimated total {amount} {currency}; {tradeoffs}".strip())
+        messages.append({"role": "system", "content": f"Plan budget context: {' | '.join(budget_lines)}."})
+    if request.source_context:
+        selected_flight = request.source_context.get("selected_flight")
+        critical_issue = request.source_context.get("critical_issue")
+        recovery_mode = bool(request.source_context.get("recovery_mode"))
+        upload_summary = str(request.source_context.get("uploaded_form_summary") or "")
+        context_lines = []
+        if recovery_mode:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "This chat is handling an urgent travel disruption. Prioritize trip recovery and traveler continuity "
+                        "over lowest cost: find a viable replacement flight from the same origin when flight travel is affected, "
+                        "preserve destination and business purpose, adjust hotel check-in/check-out or nights if the flight dates shift, "
+                        "and clearly separate confirmed actions from agent tasks. Do not say a booking is completed unless a real booking confirmation is supplied."
+                    ),
+                }
+            )
+        if isinstance(critical_issue, dict):
+            context_lines.append(
+                "Critical issue: "
+                f"{critical_issue.get('status') or 'Urgent'} - {critical_issue.get('issue') or 'travel disruption'}."
+            )
+        if isinstance(selected_flight, dict):
+            context_lines.append(
+                "Selected flight: "
+                f"{selected_flight.get('airline') or 'airline pending'}; "
+                f"{selected_flight.get('outbound') or 'outbound pending'}; "
+                f"{selected_flight.get('return_leg') or 'return pending'}; "
+                f"{selected_flight.get('total_amount') or 'price pending'} {selected_flight.get('currency') or ''}."
+            )
+        if upload_summary:
+            context_lines.append(f"Uploaded request/form context: {upload_summary[:600]}.")
+        if context_lines:
+            messages.append({"role": "system", "content": " ".join(context_lines)})
 
     for item in request.history[-10:]:
         messages.append({"role": item.role, "content": item.content})
@@ -1089,6 +1775,7 @@ def _map_rapidapi_booking_hotels(raw_hotels: Any, request: TravelRequest) -> lis
                         f"{hotel.get('class')}-star" if hotel.get("class") is not None else "",
                         f"Review {hotel.get('review_score')}/10" if hotel.get("review_score") is not None else "",
                         f"${_money_int(price / nights)} / night",
+                        f"Photo URL: {hotel.get('max_photo_url') or hotel.get('main_photo_url') or hotel.get('photo_url')}" if hotel.get("max_photo_url") or hotel.get("main_photo_url") or hotel.get("photo_url") else "",
                         "Source: Booking.com RapidAPI live search",
                         f"Booking link: {_rapidapi_booking_url(hotel, request)}" if _rapidapi_booking_url(hotel, request) else "",
                     ] if item
@@ -1345,6 +2032,7 @@ def _map_hotel_offers(raw: Any) -> list[Offer]:
                 f"{hotel.get('star_rating')}-star" if hotel.get("star_rating") is not None else "",
                 f"Review {hotel.get('review_score')}/10" if hotel.get("review_score") is not None else "",
                 f"${_money_int(hotel.get('price_per_night') or hotel.get('price_per_night_usd'))} / night" if (hotel.get("price_per_night") or hotel.get("price_per_night_usd")) else "",
+                f"Photo URL: {hotel.get('photo_url') or hotel.get('max_photo_url') or hotel.get('main_photo_url')}" if hotel.get("photo_url") or hotel.get("max_photo_url") or hotel.get("main_photo_url") else "",
                 "Source: Booking.com MCP live search",
                 f"Booking link: {hotel.get('redirect_url')}" if hotel.get("redirect_url") else "",
             ] if item
@@ -1416,8 +2104,8 @@ def _fallback_flight_legs(request: TravelRequest) -> list[FlightLeg]:
             direction="outbound",
             origin=request.origin,
             destination=request.destination,
-            departure_at=request.depart_date.isoformat(),
-            arrival_at=request.depart_date.isoformat(),
+            departure_at=f"{request.depart_date.isoformat()}T{SYNTHETIC_OUTBOUND_DEPARTURE_TIME}",
+            arrival_at=f"{request.depart_date.isoformat()}T{SYNTHETIC_OUTBOUND_ARRIVAL_TIME}",
             stops=1,
             airline="Planning estimate",
         )
@@ -1428,8 +2116,8 @@ def _fallback_flight_legs(request: TravelRequest) -> list[FlightLeg]:
                 direction="return",
                 origin=request.destination,
                 destination=request.origin,
-                departure_at=request.return_date.isoformat(),
-                arrival_at=request.return_date.isoformat(),
+                departure_at=f"{request.return_date.isoformat()}T{SYNTHETIC_RETURN_DEPARTURE_TIME}",
+                arrival_at=f"{request.return_date.isoformat()}T{SYNTHETIC_RETURN_ARRIVAL_TIME}",
                 stops=1,
                 airline="Planning estimate",
             )

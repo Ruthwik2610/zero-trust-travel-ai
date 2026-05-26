@@ -24,7 +24,7 @@ export default defineConfig({
   ],
   webServer: {
     command: process.env.CI || process.env.NODE_ENV === "production" 
-      ? "npm run build && npm run start -- --hostname 127.0.0.1 --port 3200"
+      ? "npm run build -- --webpack && npm run start -- --hostname 127.0.0.1 --port 3200"
       : "npm run dev -- --hostname 127.0.0.1 --port 3200",
     url: "http://127.0.0.1:3200",
     reuseExistingServer: !process.env.CI,

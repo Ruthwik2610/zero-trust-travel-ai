@@ -11,7 +11,8 @@
     "test:a11y": "playwright test tests/e2e/accessibility.spec.ts --project=desktop-chromium",
     "test:lighthouse": "npm run build -- --webpack && node scripts/run-lighthouse.mjs",
     "test:observability": "npm run test:a11y && npm run test:lighthouse",
-    "record:walkthrough": "npm run build && node scripts/record-walkthrough.mjs"
+    "record:walkthrough": "npm run build && node scripts/record-walkthrough.mjs",
+    "record:tutorial": "npm run build -- --webpack && node scripts/record-command-center-tutorial.mjs"
   },
   "dependencies": {
     "@sentry/nextjs": "^10.53.1",

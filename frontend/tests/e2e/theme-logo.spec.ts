@@ -1,22 +1,27 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function mockDashboardBackend(page: Page) {
+  const agentUser = {
+    user_id: "usr_theme",
+    email: "demo.agent@unipro.com",
+    role: "traveler",
+    department: "travel_ops",
+    scopes: ["travel:plan", "policy:read"],
+    manager_scope: [],
+    token_expires_at: Math.floor(Date.now() / 1000) + 900
+  };
+  await page.addInitScript((user) => {
+    window.localStorage.setItem("travel_ai_api_token", "theme-token");
+    window.localStorage.setItem("travel_ai_auth_context", JSON.stringify(user));
+  }, agentUser);
   await page.route("**/api/auth/demo-login", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         access_token: "theme-token",
         token_type: "bearer",
-        expires_at: Math.floor(Date.now() / 1000) + 900,
-        user: {
-          user_id: "usr_theme",
-          email: "demo.agent@unipro.com",
-          role: "travel_manager",
-          department: "travel_ops",
-          scopes: ["travel:plan", "policy:read", "admin:summary"],
-          manager_scope: [],
-          token_expires_at: Math.floor(Date.now() / 1000) + 900
-        }
+        expires_at: agentUser.token_expires_at,
+        user: agentUser
       })
     });
   });
@@ -32,33 +37,33 @@ test("dark mode themes the shell chrome and logo lockup", async ({ page }) => {
   });
 
   await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: "Agent Operations Dashboard" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Travel Operations" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Switch to light mode" })).toBeVisible();
 
   const styles = await page.evaluate(() => {
     const shell = document.querySelector(".ops-shell");
     const sidebar = document.querySelector(".ops-sidebar");
     const brand = document.querySelector(".brand-lockup strong");
-    const brandCaption = document.querySelector(".brand-lockup small");
-    if (!shell || !sidebar || !brand || !brandCaption) {
+    const workspace = document.querySelector(".topbar-context strong");
+    if (!shell || !sidebar || !brand || !workspace) {
       throw new Error("The app shell logo lockup did not render.");
     }
     const shellStyle = getComputedStyle(shell);
     const sidebarStyle = getComputedStyle(sidebar);
     const brandStyle = getComputedStyle(brand);
-    const captionStyle = getComputedStyle(brandCaption);
+    const workspaceStyle = getComputedStyle(workspace);
     return {
       shellBackground: shellStyle.backgroundColor,
       sidebarBackground: sidebarStyle.backgroundColor,
       brandColor: brandStyle.color,
-      captionColor: captionStyle.color
+      workspaceColor: workspaceStyle.color
     };
   });
 
   expect(styles.shellBackground).not.toBe("rgb(255, 255, 255)");
   expect(styles.sidebarBackground).not.toBe("rgb(249, 251, 251)");
   expect(styles.brandColor).not.toBe("rgb(15, 32, 48)");
-  expect(styles.captionColor).not.toBe("rgb(78, 91, 102)");
+  expect(styles.workspaceColor).not.toBe("rgb(17, 24, 39)");
 });
 
 test("request workspace does not overflow on mobile", async ({ page }) => {

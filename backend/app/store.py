@@ -293,6 +293,11 @@ class TravelStore:
             return None
         return CorporateTravelRequest.model_validate_json(row["payload_json"])
 
+    def delete_corporate_request(self, request_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM corporate_requests WHERE id = ?", (request_id,))
+        return cursor.rowcount > 0
+
     def list_corporate_requests(self) -> list[CorporateTravelRequest]:
         with self._connect() as conn:
             rows = conn.execute("SELECT payload_json FROM corporate_requests ORDER BY created_at DESC").fetchall()
@@ -334,11 +339,15 @@ class TravelStore:
         requests = self.list_corporate_requests()
         statuses = [
             "New",
+            "New Entries",
             "Missing Info",
+            "Pending Details",
+            "Processing",
             "Ready for Planning",
             "Plan Generated",
             "Waiting for Approval",
             "Finalized",
+            "Completed",
             "Cancelled",
         ]
         by_status = {status: 0 for status in statuses}
@@ -350,11 +359,12 @@ class TravelStore:
             by_status[request.status] = by_status.get(request.status, 0) + 1
             if request.travel_details.destination:
                 destinations[request.travel_details.destination] += 1
-            if request.generated_plan and request.generated_plan.budget_policy_check.approval_required:
+            active_request = request.status not in {"Finalized", "Completed", "Cancelled"}
+            if active_request and request.generated_plan and request.generated_plan.budget_policy_check.approval_required:
                 approval_required += 1
-            if request.generated_plan and request.generated_plan.travel_readiness.visa_status in {"Blocking Issue", "Needs Review"}:
+            if active_request and request.generated_plan and request.generated_plan.travel_readiness.visa_status in {"Blocking Issue", "Needs Review"}:
                 visa_issues += 1
-            if request.status == "Finalized":
+            if request.status in {"Finalized", "Completed"}:
                 finalized_requests.append(request)
         handling_hours = [
             max(0.0, (request.updated_at - request.created_at).total_seconds() / 3600)
@@ -364,8 +374,8 @@ class TravelStore:
             total_requests=len(requests),
             by_status=by_status,
             approval_required=approval_required,
-            finalized=by_status["Finalized"],
-            missing_info=by_status["Missing Info"],
+            finalized=by_status["Finalized"] + by_status["Completed"],
+            missing_info=by_status["Missing Info"] + by_status["Pending Details"],
             visa_issues=visa_issues,
             average_handling_time_hours=round(sum(handling_hours) / len(handling_hours), 2) if handling_hours else 0,
             common_destinations=[
@@ -569,8 +579,8 @@ class TravelStore:
             compliance_score=98.4,
             active_rules=[
                 {"label": "Flight Class", "value": "Business class allowed for international flights over 6 hours."},
-                {"label": "Lodging Cap", "value": "Tier 1 cities require approval above configured nightly cap."},
-                {"label": "Exceptions", "value": "Manager approval required for bookings more than 25% above cap."},
+                {"label": "Lodging Cap", "value": "Flag stays above the configured nightly cap before booking."},
+                {"label": "Exceptions", "value": "Record external approval for bookings more than 25% above cap."},
             ],
             revisions=[
                 {

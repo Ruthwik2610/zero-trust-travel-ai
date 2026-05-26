@@ -1,5 +1,5 @@
-import { AdminDashboard } from "@/components/TravelAppScreens";
+import { redirect } from "next/navigation";
 
 export default function AdminPage() {
-  return <AdminDashboard />;
+  redirect("/dashboard");
 }

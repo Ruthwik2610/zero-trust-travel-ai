@@ -24,6 +24,8 @@ rsync -az --delete --stats \
   --exclude 'node_modules/' \
   --exclude 'node_modules' \
   --exclude '.next/' \
+  --exclude 'frontend/public/videos/' \
+  --exclude 'frontend/public/videos' \
   --exclude 'dist/' \
   --exclude 'build/' \
   --exclude 'out/' \
@@ -44,7 +46,7 @@ rsync -az --delete --stats \
   "${APP_DIR}/" "${SSH_ALIAS}:${REMOTE_DIR}/"
 
 ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cd '${REMOTE_DIR}/backend' && if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi && .venv/bin/python -m pip install -r requirements.txt"
-ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cd '${REMOTE_DIR}/frontend' && if [ -f package-lock.json ]; then npm ci; else npm install; fi && TRAVEL_AI_API_INTERNAL_URL=http://127.0.0.1:8100 npm run build"
+ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cd '${REMOTE_DIR}/frontend' && if [ -f package-lock.json ]; then npm ci; else npm install; fi && TRAVEL_AI_API_INTERNAL_URL=http://127.0.0.1:8100 npm run build -- --webpack"
 ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "chown -R '${SERVICE_USER}:${SERVICE_USER}' '${REMOTE_DIR}'"
 
 ssh -F "${SSH_CONFIG}" "${SSH_ALIAS}" "cp '${REMOTE_DIR}/deploy/systemd/travel-ai-backend.service' /etc/systemd/system/travel-ai-backend.service && cp '${REMOTE_DIR}/deploy/systemd/travel-ai-frontend.service' /etc/systemd/system/travel-ai-frontend.service && systemctl daemon-reload && systemctl restart '${BACKEND_SERVICE}' && systemctl restart '${FRONTEND_SERVICE}'"
