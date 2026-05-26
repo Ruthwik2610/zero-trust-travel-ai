@@ -38,7 +38,6 @@ SAFE_ENV_KEYS = (
     "FRONTEND_ORIGIN",
     "TRAVEL_AI_ALLOWED_ORIGINS",
 )
-LOCAL_ENV_FILE_NAMES = (".env", ".env.local")
 REVIEW_SPECS = (
     (
         "Backend security and provider review",
@@ -69,7 +68,6 @@ class ReviewSpec:
 def main() -> int:
     args = parse_args()
     repo_root = Path.cwd()
-    load_local_env(repo_root)
     branch = args.branch or current_branch(repo_root)
     source_name = args.source or resolve_source_name(repo_root, args)
     review_specs = [ReviewSpec(title, focus) for title, focus in REVIEW_SPECS]
@@ -90,33 +88,6 @@ def main() -> int:
     ]
     print(json.dumps({"sessions": created_sessions}, indent=2))
     return 0
-
-
-def load_local_env(repo_root: Path) -> None:
-    for file_name in LOCAL_ENV_FILE_NAMES:
-        load_env_file(repo_root / file_name)
-
-
-def load_env_file(path: Path) -> None:
-    if not path.is_file():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        key, value = parse_env_line(raw_line)
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def parse_env_line(raw_line: str) -> tuple[str | None, str]:
-    line = raw_line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        return None, ""
-    if line.startswith("export "):
-        line = line.removeprefix("export ").strip()
-    key, value = line.split("=", 1)
-    clean_key = key.strip()
-    if not clean_key.isidentifier():
-        return None, ""
-    return clean_key, value.strip().strip('"').strip("'")
 
 
 def parse_args() -> argparse.Namespace:

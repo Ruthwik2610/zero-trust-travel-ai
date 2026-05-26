@@ -12,7 +12,7 @@ The runner is `scripts/run_jules_code_reviews.py`.
 
 Do not commit or paste API keys into the repo.
 
-The Jules API key must be supplied as `JULES_API_KEY` in the local or automation environment. The runner also loads repo-local `.env` and `.env.local`, which are gitignored. If a key was pasted into chat, rotate it in Jules settings before using it again.
+The Jules API key must be supplied as `JULES_API_KEY` in the local or automation environment. The runner does not read repo-local `.env` files. If a key was pasted into chat, rotate it in Jules settings before using it again.
 
 The runner does not upload raw `.env` files. It sends only an allowlisted present/missing manifest for provider variables so Jules knows whether live checks are possible without seeing values.
 
