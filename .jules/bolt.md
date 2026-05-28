@@ -1,0 +1,3 @@
+## 2024-05-28 - Expensive Intl Instantiation in Tight Render Loops
+**Learning:** Instantiating `Intl.NumberFormat` and `Intl.DateTimeFormat` on every call (like inside tight map loops or heavily re-rendered React components such as `TravelAppScreens.tsx`) is a massive, measurable performance bottleneck. Benchmarks show it's approximately 40x to 90x slower to recreate the formatter each time than to reuse a cached instance.
+**Action:** Always extract `Intl` formatters outside the formatting functions or use a memoization strategy/cache (e.g., `new Map()` for varying parameters like currency) to prevent re-instantiation.

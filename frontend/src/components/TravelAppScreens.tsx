@@ -264,12 +264,19 @@ async function ensureTravelSession(email = getStoredEmail()) {
   throw new Error(`Sign in required for ${email || DEFAULT_EMAIL}`);
 }
 
+const moneyFormatters = new Map<string, Intl.NumberFormat>();
+
 function formatMoney(amount: number, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: currency === "INR" || currency === "JPY" ? 0 : 2
-  }).format(amount || 0);
+  let formatter = moneyFormatters.get(currency);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: currency === "INR" || currency === "JPY" ? 0 : 2
+    });
+    moneyFormatters.set(currency, formatter);
+  }
+  return formatter.format(amount || 0);
 }
 
 function parseBudgetCommand(prompt: string) {
@@ -417,23 +424,27 @@ function removeMissingField(value: string, fieldPattern: RegExp) {
     .join("\n");
 }
 
+const dateFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const timeFormatter = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
+
 function formatDate(value: string) {
   if (!value) return "TBD";
   const parsed = new Date(`${value.slice(0, 10)}T12:00:00`);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(parsed);
+  return dateFormatter.format(parsed);
 }
 
 function formatUpdated(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(parsed);
+  return dateTimeFormatter.format(parsed);
 }
 
 function formatDateTimeText(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(parsed);
+  return dateTimeFormatter.format(parsed);
 }
 
 function displayNameFromEmail(email: string) {
@@ -473,7 +484,7 @@ function buildDashboardRequests(requests: CorporateTravelRequest[]) {
 function compactTime(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "TBD";
-  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(parsed);
+  return timeFormatter.format(parsed);
 }
 
 function updatedAge(value: string) {
