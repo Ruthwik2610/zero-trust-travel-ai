@@ -700,11 +700,11 @@ function AppShell({ active, children, notificationCount }: { active: AppArea; ch
       <aside className="ops-sidebar" aria-label="Travel workspace sections">
         <Link className="sidebar-brand" href={workspaceHome} aria-label={workspaceTitle}><UniproLogo /></Link>
         <nav aria-label="Travel operations navigation">
-          <Link className={active === "dashboard" || active === "requests" ? "active" : ""} href="/dashboard"><User size={18} /><span className="nav-label">Agent Operations</span></Link>
-          <Link className={active === "itineraries" ? "active" : ""} href="/planner"><Plane size={18} /><span className="nav-label">Itineraries</span></Link>
-          <Link className={active === "travelers" ? "active" : ""} href="/travelers"><IdCard size={18} /><span className="nav-label">Traveler Roster</span></Link>
-          {canReadPolicy ? <Link className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /><span className="nav-label">Policy Context</span></Link> : null}
-          {canReadAudit ? <Link className={active === "audit" ? "active" : ""} href="/audit"><History size={18} /><span className="nav-label">Audit</span></Link> : null}
+          <Link aria-current={active === "dashboard" || active === "requests" ? "page" : undefined} className={active === "dashboard" || active === "requests" ? "active" : ""} href="/dashboard"><User size={18} /><span className="nav-label">Agent Operations</span></Link>
+          <Link aria-current={active === "itineraries" ? "page" : undefined} className={active === "itineraries" ? "active" : ""} href="/planner"><Plane size={18} /><span className="nav-label">Itineraries</span></Link>
+          <Link aria-current={active === "travelers" ? "page" : undefined} className={active === "travelers" ? "active" : ""} href="/travelers"><IdCard size={18} /><span className="nav-label">Traveler Roster</span></Link>
+          {canReadPolicy ? <Link aria-current={active === "policy" ? "page" : undefined} className={active === "policy" ? "active" : ""} href="/policy"><ShieldCheck size={18} /><span className="nav-label">Policy Context</span></Link> : null}
+          {canReadAudit ? <Link aria-current={active === "audit" ? "page" : undefined} className={active === "audit" ? "active" : ""} href="/audit"><History size={18} /><span className="nav-label">Audit</span></Link> : null}
         </nav>
         <div className="sidebar-footer">
           <span className="sidebar-label">Workspace</span>
@@ -1166,7 +1166,7 @@ function RequestQueue({
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
         {filters.map((filter) => (
-          <button className={queueFilter === filter.value ? "active" : ""} key={filter.value} type="button" onClick={() => onQueueFilterChange(filter.value)}>
+          <button aria-pressed={queueFilter === filter.value} className={queueFilter === filter.value ? "active" : ""} key={filter.value} type="button" onClick={() => onQueueFilterChange(filter.value)}>
             {filter.label} <span>{counts[filter.value]}</span>
           </button>
         ))}
