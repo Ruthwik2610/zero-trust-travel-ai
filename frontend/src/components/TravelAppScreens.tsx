@@ -832,6 +832,8 @@ export function TravelerDashboard() {
     const query = searchQuery.trim().toLowerCase();
     return dashboardRequests.filter((request) => {
       const statusMatches = queueFilterFor(request) === queueFilter;
+      // ⚡ Bolt: Added early return to skip expensive .toLowerCase() and .includes()
+      if (!statusMatches) return false;
       const queryMatches = !query || [
         request.id,
         request.travellerName,
@@ -841,7 +843,7 @@ export function TravelerDashboard() {
         request.destination,
         request.purpose
       ].some((value) => value.toLowerCase().includes(query));
-      return statusMatches && queryMatches;
+      return queryMatches;
     });
   }, [dashboardRequests, searchQuery, queueFilter]);
   const selectedRequest = workspaceRequestId ? dashboardRequests.find((request) => request.id === workspaceRequestId) || null : null;
@@ -1077,6 +1079,13 @@ export function TravelerDashboard() {
   );
 }
 
+const QUEUE_FILTERS: Array<{ value: QueueFilter; label: string }> = [
+  { value: "new_entries", label: "New Entries" },
+  { value: "needs_details", label: "Pending Details" },
+  { value: "processing", label: "Processing" },
+  { value: "completed", label: "Completed" }
+];
+
 function RequestQueue({
   allRequests,
   requests,
@@ -1106,21 +1115,21 @@ function RequestQueue({
 }) {
   const [issueStatus, setIssueStatus] = useState("");
   const [workingIssueId, setWorkingIssueId] = useState("");
-  const filters: Array<{ value: QueueFilter; label: string }> = [
-    { value: "new_entries", label: "New Entries" },
-    { value: "needs_details", label: "Pending Details" },
-    { value: "processing", label: "Processing" },
-    { value: "completed", label: "Completed" }
-  ];
-  const counts = filters.reduce<Record<QueueFilter, number>>((current, filter) => {
-    current[filter.value] = allRequests.filter((request) => queueFilterFor(request) === filter.value).length;
-    return current;
-  }, {
-    new_entries: 0,
-    needs_details: 0,
-    processing: 0,
-    completed: 0
-  });
+
+  // ⚡ Bolt: Reduced queue tab counting from O(4N) to O(N) using a single reduce pass and memoization
+  const counts = useMemo(() => {
+    return allRequests.reduce<Record<QueueFilter, number>>((acc, request) => {
+      const filter = queueFilterFor(request);
+      acc[filter] = (acc[filter] || 0) + 1;
+      return acc;
+    }, {
+      new_entries: 0,
+      needs_details: 0,
+      processing: 0,
+      completed: 0
+    });
+  }, [allRequests]);
+
   async function markIssue(request: CorporateTravelRequest, issue: string) {
     if (!issue || workingIssueId) return;
     setIssueStatus("");
@@ -1165,7 +1174,7 @@ function RequestQueue({
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
-        {filters.map((filter) => (
+        {QUEUE_FILTERS.map((filter) => (
           <button className={queueFilter === filter.value ? "active" : ""} key={filter.value} type="button" onClick={() => onQueueFilterChange(filter.value)}>
             {filter.label} <span>{counts[filter.value]}</span>
           </button>
@@ -1313,6 +1322,9 @@ function TravelRequestForm({
   const formStatus = errorMessage || downloadStatus;
   const needsReturnDate = form.includeReturnFlight || form.includeHotel;
   const needsOrigin = form.includeOutboundFlight || form.includeReturnFlight;
+  // ⚡ Bolt: Pre-computed parsed values for string-based arrays to prevent redundant .split() and .map() inside render loops.
+  const parsedPreferences = useMemo(() => form.preferences.split(";").map((part) => part.trim()), [form.preferences]);
+  const parsedSpecialRequests = useMemo(() => form.specialRequests.split(";").map((part) => part.trim()), [form.specialRequests]);
 
   function update<K extends keyof CorporateCreateRequest>(key: K, value: CorporateCreateRequest[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -1397,8 +1409,8 @@ function TravelRequestForm({
           <div className="option-chip-grid">
             {PREFERENCE_OPTIONS.map((option) => (
               <button
-                aria-pressed={form.preferences.split(";").map((part) => part.trim()).includes(option)}
-                className={form.preferences.split(";").map((part) => part.trim()).includes(option) ? "option-chip selected" : "option-chip"}
+                aria-pressed={parsedPreferences.includes(option)}
+                className={parsedPreferences.includes(option) ? "option-chip selected" : "option-chip"}
                 key={option}
                 type="button"
                 onClick={() => toggleOption("preferences", option)}
@@ -1414,8 +1426,8 @@ function TravelRequestForm({
           <div className="option-chip-grid">
             {SPECIAL_REQUEST_OPTIONS.map((option) => (
               <button
-                aria-pressed={form.specialRequests.split(";").map((part) => part.trim()).includes(option)}
-                className={form.specialRequests.split(";").map((part) => part.trim()).includes(option) ? "option-chip selected" : "option-chip"}
+                aria-pressed={parsedSpecialRequests.includes(option)}
+                className={parsedSpecialRequests.includes(option) ? "option-chip selected" : "option-chip"}
                 key={option}
                 type="button"
                 onClick={() => toggleOption("specialRequests", option)}
