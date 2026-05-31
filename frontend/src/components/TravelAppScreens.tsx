@@ -1112,15 +1112,19 @@ function RequestQueue({
     { value: "processing", label: "Processing" },
     { value: "completed", label: "Completed" }
   ];
-  const counts = filters.reduce<Record<QueueFilter, number>>((current, filter) => {
-    current[filter.value] = allRequests.filter((request) => queueFilterFor(request) === filter.value).length;
-    return current;
-  }, {
-    new_entries: 0,
-    needs_details: 0,
-    processing: 0,
-    completed: 0
-  });
+  // ⚡ Bolt: Use a single O(N) pass and memoize the filter counting, rather than O(N*M) nested looping per render.
+  const counts = useMemo(() => {
+    return allRequests.reduce<Record<QueueFilter, number>>((acc, request) => {
+      const stage = queueFilterFor(request);
+      if (stage in acc) acc[stage]++;
+      return acc;
+    }, {
+      new_entries: 0,
+      needs_details: 0,
+      processing: 0,
+      completed: 0
+    });
+  }, [allRequests]);
   async function markIssue(request: CorporateTravelRequest, issue: string) {
     if (!issue || workingIssueId) return;
     setIssueStatus("");
