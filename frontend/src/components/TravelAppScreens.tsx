@@ -961,12 +961,23 @@ export function TravelerDashboard() {
     setCreateStatus("");
   }
 
-  const activeDashboardRequests = dashboardRequests.filter(isActiveRequest);
-  const stats = {
-    active: activeDashboardRequests.length,
-    approval: activeDashboardRequests.filter((request) => request.approvalStatus === "Required").length,
-    visa: activeDashboardRequests.filter((request) => request.visaStatus !== "clear").length
-  };
+  // ⚡ Bolt Performance Optimization:
+  // Memoized stats calculation and combined 3 separate O(N) array filter passes into a single O(N) loop.
+  // This reduces re-renders and CPU cycles, especially when typing in the search input
+  // since stats only depends on dashboardRequests, not the searchQuery.
+  const stats = useMemo(() => {
+    let active = 0;
+    let approval = 0;
+    let visa = 0;
+    for (const request of dashboardRequests) {
+      if (isActiveRequest(request)) {
+        active++;
+        if (request.approvalStatus === "Required") approval++;
+        if (request.visaStatus !== "clear") visa++;
+      }
+    }
+    return { active, approval, visa };
+  }, [dashboardRequests]);
   const headingTitle = showRequestForm ? "New Request" : selectedRequest ? selectedRequest.travellerName : "Travel Operations";
   const headingDescription = loadState === "loading"
     ? "Loading travel requests..."
