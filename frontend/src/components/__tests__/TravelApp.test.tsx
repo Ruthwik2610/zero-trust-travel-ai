@@ -1724,6 +1724,7 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(await screen.findByText("Anika Shah")).toBeTruthy();
     expect(screen.getByText("Ravi Menon")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Search travelers"), { target: { value: "northstar" } });
+    await waitFor(() => { expect(screen.queryByText("Ravi Menon")).toBeNull(); });
 
     expect(screen.getByText("Anika Shah")).toBeTruthy();
     expect(screen.queryByText("Ravi Menon")).toBeNull();
