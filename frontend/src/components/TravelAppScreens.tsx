@@ -2078,8 +2078,8 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
               </button>
             ) : (
               <>
-                <button className="secondary-button" type="button" onClick={() => void sendApproval()} disabled={draft.approvalStatus !== "Required"}><Send size={16} /> Send Approval</button>
-                <button className="secondary-button" type="button" onClick={() => void approveFinal()} disabled={draft.approvalStatus === "Rejected"}><ClipboardCheck size={16} /> Generate Final Itinerary</button>
+                <button className="secondary-button" type="button" onClick={() => void sendApproval()} disabled={draft.approvalStatus !== "Required"} title={draft.approvalStatus !== "Required" ? "Approval not required" : undefined}><Send size={16} /> Send Approval</button>
+                <button className="secondary-button" type="button" onClick={() => void approveFinal()} disabled={draft.approvalStatus === "Rejected"} title={draft.approvalStatus === "Rejected" ? "Cannot generate itinerary for rejected request" : undefined}><ClipboardCheck size={16} /> Generate Final Itinerary</button>
                 {draft.finalApproved || draft.status === "finalized" ? (
                   <button className="secondary-button" type="button" onClick={() => void downloadRequestPdf()}><Download size={16} /> Download PDF</button>
                 ) : null}
