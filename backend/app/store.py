@@ -138,6 +138,18 @@ class TravelStore:
                 """
             )
 
+            # Performance Optimization: Indexes for frequent full table scans
+            # Speed up filtering by owner and sort ordering by created_at / updated_at
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_created_at ON trips (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner_created_at ON trips (owner_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_reqs_created_at ON corporate_requests (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_reqs_owner_created_at ON corporate_requests (owner_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_travelers_updated_at ON travelers (updated_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_groups_updated_at ON policy_groups (updated_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_activity_created_at ON policy_activity_events (created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_created_at ON email_events (created_at DESC)")
+
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:

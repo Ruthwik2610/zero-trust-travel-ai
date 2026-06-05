@@ -1,0 +1,3 @@
+## 2024-06-05 - SQLite Backend Database Missing Indexes
+**Learning:** The SQLite database initialized in `backend/app/store.py` lacks indexes on frequently accessed columns like `owner_id` and `created_at` or `updated_at`, specifically in tables like `trips` and `corporate_requests`. This leads to full table scans when fetching requests for a specific owner or sorting by creation date.
+**Action:** Added missing SQLite indexes on `created_at` and `owner_id, created_at` for tables that use them for sorting and filtering (`trips`, `audit_events`, `corporate_requests`, `travelers`, `policy_groups`, `policy_activity_events`, `email_events`) inside `_init_schema`.
