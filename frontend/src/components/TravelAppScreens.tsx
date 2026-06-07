@@ -601,6 +601,17 @@ function firstAvailableQueueFilter(requests: CorporateTravelRequest[], current: 
   return (["new_entries", "processing", "needs_details", "completed"] as QueueFilter[]).find((filter) => requests.some((request) => queueFilterFor(request) === filter)) || "new_entries";
 }
 
+function useDebounce<T>(value: T, delay: number = 300): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 function useSelectedRole() {
   const [role, setRole] = useState<CorporateRole>("agent");
 
@@ -828,8 +839,10 @@ export function TravelerDashboard() {
   const [uploadingForms, setUploadingForms] = useState(false);
   const [deletingRequestId, setDeletingRequestId] = useState("");
   const dashboardRequests = useMemo(() => buildDashboardRequests(requests), [requests]);
+  const debouncedSearchQuery = useDebounce(searchQuery);
   const filteredDashboardRequests = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    // ⚡ Bolt: Use debounced search query to prevent filtering the dashboard on every keystroke
+    const query = debouncedSearchQuery.trim().toLowerCase();
     return dashboardRequests.filter((request) => {
       const statusMatches = queueFilterFor(request) === queueFilter;
       const queryMatches = !query || [
@@ -843,7 +856,7 @@ export function TravelerDashboard() {
       ].some((value) => value.toLowerCase().includes(query));
       return statusMatches && queryMatches;
     });
-  }, [dashboardRequests, searchQuery, queueFilter]);
+  }, [dashboardRequests, debouncedSearchQuery, queueFilter]);
   const selectedRequest = workspaceRequestId ? dashboardRequests.find((request) => request.id === workspaceRequestId) || null : null;
 
   async function refreshRequests() {
@@ -2781,8 +2794,10 @@ export function TripPlannerScreen() {
       .catch(() => setRequests([]));
   }, []);
 
+  const debouncedSearchTerm = useDebounce(searchTerm);
   const filteredRequests = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
+    // ⚡ Bolt: Use debounced search term to avoid filtering the itinerary planner list on every keystroke
+    const query = debouncedSearchTerm.trim().toLowerCase();
     if (!query) return requests;
     return requests.filter((request) => [
       request.id,
@@ -2793,7 +2808,7 @@ export function TripPlannerScreen() {
       request.status,
       request.recommendedPlans.find((plan) => plan.selected)?.name || request.recommendedPlans[0]?.name || ""
     ].join(" ").toLowerCase().includes(query));
-  }, [requests, searchTerm]);
+  }, [requests, debouncedSearchTerm]);
 
   async function generatePlan(id: string) {
     if (workingId) return;
@@ -3276,8 +3291,10 @@ export function TravelerRosterScreen() {
       .finally(() => setReviewLoading(false));
   }, []);
 
+  const debouncedSearchTerm = useDebounce(searchTerm);
   const filteredTravelers = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
+    // ⚡ Bolt: Use debounced search term to avoid filtering the traveler roster on every keystroke
+    const query = debouncedSearchTerm.trim().toLowerCase();
     return travelers.filter((traveler) => {
       const hasDocumentIssue = traveler.status !== "Compliant" || traveler.documents.some((document) => document.status !== "Ready");
       if (documentIssuesOnly && !hasDocumentIssue) return false;
@@ -3292,7 +3309,7 @@ export function TravelerRosterScreen() {
         programs
       ].join(" ").toLowerCase().includes(query);
     });
-  }, [documentIssuesOnly, searchTerm, travelers, vipOnly]);
+  }, [documentIssuesOnly, debouncedSearchTerm, travelers, vipOnly]);
 
   async function approveReviewItem(item: RosterReviewItem) {
     const nextTraveler = travelerFromReviewItem(item);

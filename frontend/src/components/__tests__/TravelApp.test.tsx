@@ -699,13 +699,17 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(within(metrics).getAllByText("1").length).toBeGreaterThanOrEqual(2);
     fireEvent.change(screen.getByRole("textbox", { name: "Search requests" }), { target: { value: "Johannesburg" } });
     const queueRegion = screen.getByRole("region", { name: "Requests" });
-    expect(within(queueRegion).getAllByText("Vikram Rao").length).toBeGreaterThan(0);
-    expect(within(queueRegion).queryByText("Mira Kapoor")).toBeNull();
+    await waitFor(() => {
+      expect(within(queueRegion).getAllByText("Vikram Rao").length).toBeGreaterThan(0);
+      expect(within(queueRegion).queryByText("Mira Kapoor")).toBeNull();
+    });
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search requests" }), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /Completed/i }));
-    expect(within(queueRegion).queryByText("Vikram Rao")).toBeNull();
-    expect(within(queueRegion).getAllByText("Mira Kapoor").length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(within(queueRegion).queryByText("Vikram Rao")).toBeNull();
+      expect(within(queueRegion).getAllByText("Mira Kapoor").length).toBeGreaterThan(0);
+    });
     expect(screen.getByText("Showing 1 to 1 of 1 requests")).toBeTruthy();
   });
 
@@ -1725,8 +1729,10 @@ describe("AI Corporate Travel Planning Assistant MVP", () => {
     expect(screen.getByText("Ravi Menon")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Search travelers"), { target: { value: "northstar" } });
 
-    expect(screen.getByText("Anika Shah")).toBeTruthy();
-    expect(screen.queryByText("Ravi Menon")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByText("Anika Shah")).toBeTruthy();
+      expect(screen.queryByText("Ravi Menon")).toBeNull();
+    });
   });
 
   it("filters the traveler roster to document issues", async () => {
