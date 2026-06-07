@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   BarChart3,
   Building2,
@@ -17,6 +18,7 @@ import {
   FileText,
   History,
   IdCard,
+  Info,
   Lock,
   MessageSquare,
   Moon,
@@ -42,7 +44,7 @@ import {
   createCorporateRequest,
   demoLogin,
   deleteCorporateRequest,
-  downloadClientRequestFormPdf,
+  downloadClientRequestFormDocx,
   downloadCorporateExcelTemplate,
   downloadCorporateRequestPdf,
   finalizeCorporateRequest,
@@ -136,8 +138,7 @@ const ROLE_ACCOUNTS: Record<CorporateRole, { label: string; email: string; usern
 
 const EMPTY_FORM: CorporateCreateRequest = {
   travellerName: "",
-  travellerEmail: "",
-  company: "",
+  employeeBand: "",
   origin: "",
   destination: "",
   departDate: "",
@@ -145,10 +146,7 @@ const EMPTY_FORM: CorporateCreateRequest = {
   includeOutboundFlight: true,
   includeReturnFlight: true,
   includeHotel: true,
-  purpose: "",
   preferences: "",
-  budgetAmount: 150000,
-  budgetCurrency: "INR",
   specialRequests: ""
 };
 
@@ -270,21 +268,6 @@ function formatMoney(amount: number, currency: string) {
     currency,
     maximumFractionDigits: currency === "INR" || currency === "JPY" ? 0 : 2
   }).format(amount || 0);
-}
-
-function parseBudgetCommand(prompt: string) {
-  if (!/\b(budget|cost limit|spend limit|approved amount|amount)\b/i.test(prompt)) return null;
-  const lakhMatch = prompt.match(/(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*lakh/i);
-  if (lakhMatch) {
-    return { amount: Math.round(Number(lakhMatch[1]) * 100000), currency: "INR" };
-  }
-  const match = prompt.match(/(₹|rs\.?|inr|usd|eur|gbp|cad|aud|jpy|zar)?\s*(\d[\d,]*(?:\.\d+)?)\s*(inr|usd|eur|gbp|cad|aud|jpy|zar)?/i);
-  if (!match) return null;
-  const amount = Math.round(Number(match[2].replace(/,/g, "")));
-  if (!amount) return null;
-  const rawCurrency = (match[1] || match[3] || "INR").toUpperCase();
-  const currency = rawCurrency === "₹" || rawCurrency.startsWith("RS") ? "INR" : rawCurrency;
-  return { amount, currency };
 }
 
 function parseNationalityCommand(prompt: string) {
@@ -417,6 +400,12 @@ function removeMissingField(value: string, fieldPattern: RegExp) {
     .join("\n");
 }
 
+function isSafeUserError(message: string) {
+  return message !== "Travel service request failed"
+    && message.length <= 600
+    && !/(token|secret|password|api[_ -]?key|stack trace)/i.test(message);
+}
+
 function formatDate(value: string) {
   if (!value) return "TBD";
   const parsed = new Date(`${value.slice(0, 10)}T12:00:00`);
@@ -434,6 +423,27 @@ function formatDateTimeText(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(parsed);
+}
+
+function formatReviewDateTimeText(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(parsed);
+}
+
+function formatClockText(value?: string | null) {
+  const match = (value || "").match(/(\d{1,2}):(\d{2})/);
+  if (!match) return value || "";
+  const parsed = new Date(`2000-01-01T${match[1].padStart(2, "0")}:${match[2]}:00`);
+  if (Number.isNaN(parsed.getTime())) return value || "";
+  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(parsed);
 }
 
 function displayNameFromEmail(email: string) {
@@ -539,7 +549,7 @@ function corporateRequestTripContext(request: CorporateTravelRequest): Trip {
 }
 
 function priorityFor(request: CorporateTravelRequest): "High" | "Medium" | "Low" {
-  if (request.status === "finalized") {
+  if (request.status === "finalized" || request.status === "cancelled") {
     return "Low";
   }
   if (request.criticalIssueStatus === "Urgent") {
@@ -549,12 +559,11 @@ function priorityFor(request: CorporateTravelRequest): "High" | "Medium" | "Low"
     request.status === "missing_info"
     || request.visaStatus === "blocked"
     || request.visaStatus === "pending"
-    || request.budgetStatus === "blocked"
     || request.approvalStatus === "Required"
   ) {
     return "High";
   }
-  if (request.status === "new" || request.status === "planning" || request.budgetStatus === "attention") {
+  if (request.status === "new" || request.status === "planning") {
     return "Medium";
   }
   return "Low";
@@ -562,17 +571,18 @@ function priorityFor(request: CorporateTravelRequest): "High" | "Medium" | "Low"
 
 function priorityReasons(request: CorporateTravelRequest) {
   if (request.status === "finalized") return ["Completed"];
+  if (request.status === "cancelled") return ["Cancelled"];
   const reasons: string[] = [];
   if (request.criticalIssueStatus === "Urgent") reasons.push("Critical issue");
   if (request.status === "missing_info" || request.missingInformation) reasons.push("Missing info");
   if (request.visaStatus === "blocked" || request.visaStatus === "pending") reasons.push("Visa issue");
-  if (request.budgetStatus === "blocked" || request.budgetStatus === "attention") reasons.push("Over budget");
   if (request.approvalStatus === "Required") reasons.push("Approval needed");
   return reasons.length ? reasons : ["Ready"];
 }
 
 function nextActionFor(request: CorporateTravelRequest) {
   if (request.status === "finalized") return "Completed";
+  if (request.status === "cancelled") return "Cancelled";
   if (request.criticalIssueStatus === "Urgent") return "Work issue";
   if (request.status === "missing_info") return "Ask for info";
   if (request.status === "new") return "Generate plan";
@@ -585,7 +595,7 @@ function nextActionFor(request: CorporateTravelRequest) {
 }
 
 function boardStageFor(request: CorporateTravelRequest) {
-  if (request.status === "finalized") return "completed";
+  if (request.status === "finalized" || request.status === "cancelled") return "completed";
   if (request.criticalIssueStatus === "Urgent") return "new_entries";
   if (request.status === "missing_info") return "needs_details";
   if (request.status === "processing" || request.status === "planning" || request.status === "pending_approval") return "processing";
@@ -901,8 +911,11 @@ export function TravelerDashboard() {
       const created = await createCorporateRequest(payload);
       replaceRequest(created);
       setShowRequestForm(false);
-    } catch {
-      setCreateStatus("Request could not be created. Check the details and try again.");
+    } catch (error) {
+      const message = error instanceof Error && isSafeUserError(error.message)
+        ? error.message
+        : "Request could not be created. Check the details and try again.";
+      setCreateStatus(message);
     } finally {
       setCreatingRequest(false);
     }
@@ -914,14 +927,24 @@ export function TravelerDashboard() {
     setFormUploadStatus("");
     try {
       const result = await uploadCorporateRequests(formUploadFile);
-      await refreshRequests();
-      setWorkspaceRequestId("");
+      const refreshed = await refreshRequests();
+      const importedId = result.requests[0]?.id || "";
+      if (importedId && refreshed.some((request) => request.id === importedId)) {
+        setSelectedId(importedId);
+        setWorkspaceRequestId(importedId);
+        setWorkspaceInitialStep("missing");
+      } else {
+        setWorkspaceRequestId("");
+      }
       setShowRequestForm(false);
       setFormUploadFile(null);
       const created = result.createdRequests || result.requests.length;
       setFormUploadStatus(`${created} request${created === 1 ? "" : "s"} entered intake from ${formUploadFile.name}.`);
-    } catch {
-      setFormUploadStatus("Travel forms could not be uploaded. Check the workbook and try again.");
+    } catch (error) {
+      const message = error instanceof Error && isSafeUserError(error.message)
+        ? error.message
+        : "Travel forms could not be uploaded. Check the workbook, PDF, or Word form and try again.";
+      setFormUploadStatus(message);
     } finally {
       setUploadingForms(false);
     }
@@ -1002,7 +1025,7 @@ export function TravelerDashboard() {
                 <input
                   aria-label="Upload travel forms"
                   type="file"
-                  accept=".xlsx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  accept=".xlsx,.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   onChange={(event) => {
                     setFormUploadStatus("");
                     setFormUploadFile(event.target.files?.[0] || null);
@@ -1171,7 +1194,7 @@ function RequestQueue({
           </button>
         ))}
       </div>
-      <div className="ticket-table-wrap">
+      <div aria-label="Scrollable request table" className="ticket-table-wrap" tabIndex={0}>
         <table className="ticket-table">
           <thead>
             <tr>
@@ -1311,8 +1334,6 @@ function TravelRequestForm({
   const [downloadStatus, setDownloadStatus] = useState("");
   const [downloadingClientForm, setDownloadingClientForm] = useState(false);
   const formStatus = errorMessage || downloadStatus;
-  const needsReturnDate = form.includeReturnFlight || form.includeHotel;
-  const needsOrigin = form.includeOutboundFlight || form.includeReturnFlight;
 
   function update<K extends keyof CorporateCreateRequest>(key: K, value: CorporateCreateRequest[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -1339,15 +1360,15 @@ function TravelRequestForm({
     setDownloadStatus("");
     setDownloadingClientForm(true);
     try {
-      const blob = await downloadClientRequestFormPdf();
+      const blob = await downloadClientRequestFormDocx();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "client_travel_request_form.pdf";
+      link.download = "client_travel_request_form.docx";
       link.click();
       URL.revokeObjectURL(url);
     } catch {
-      setDownloadStatus("Client form PDF could not be downloaded. Please try again.");
+      setDownloadStatus("Client Word form could not be downloaded. Please try again.");
     } finally {
       setDownloadingClientForm(false);
     }
@@ -1359,39 +1380,17 @@ function TravelRequestForm({
         <h2>{title}</h2>
         <div className="button-row compact">
           <button className="secondary-button" type="button" onClick={() => void downloadClientForm()} disabled={downloadingClientForm}>
-            <FileText size={16} /> {downloadingClientForm ? "Preparing PDF..." : "Client Form PDF"}
+            <FileText size={16} /> {downloadingClientForm ? "Preparing Word..." : "Client Form Word"}
           </button>
-          {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
         </div>
       </div>
       <div className="form-grid">
         <label><span>Traveller name</span><input value={form.travellerName} onChange={(event) => update("travellerName", event.target.value)} required /></label>
-        <label><span>Traveller email</span><input type="email" value={form.travellerEmail} onChange={(event) => update("travellerEmail", event.target.value)} required /></label>
-        <label><span>Company</span><input value={form.company} onChange={(event) => update("company", event.target.value)} required /></label>
-        <label><span>Origin</span><input value={form.origin} onChange={(event) => update("origin", event.target.value)} required={needsOrigin} /></label>
+        <label><span>Employee band</span><input value={form.employeeBand} onChange={(event) => update("employeeBand", event.target.value)} placeholder="1, 2, or 3" required /></label>
+        <label><span>Origin</span><input value={form.origin} onChange={(event) => update("origin", event.target.value)} required /></label>
         <label><span>Destination</span><input value={form.destination} onChange={(event) => update("destination", event.target.value)} required /></label>
         <label><span>Depart date</span><input type="date" value={form.departDate} onChange={(event) => update("departDate", event.target.value)} required /></label>
-        <label><span>Return date</span><input type="date" value={form.returnDate} onChange={(event) => update("returnDate", event.target.value)} required={needsReturnDate} /></label>
-        <fieldset className="span-2 option-field compact-options">
-          <legend>Trip components</legend>
-          <div className="option-chip-grid">
-            <label className="check-row">
-              <input type="checkbox" checked={form.includeOutboundFlight} onChange={(event) => update("includeOutboundFlight", event.target.checked)} />
-              <span>Outbound flight</span>
-            </label>
-            <label className="check-row">
-              <input type="checkbox" checked={form.includeReturnFlight} onChange={(event) => update("includeReturnFlight", event.target.checked)} />
-              <span>Return flight</span>
-            </label>
-            <label className="check-row">
-              <input type="checkbox" checked={form.includeHotel} onChange={(event) => update("includeHotel", event.target.checked)} />
-              <span>Hotel</span>
-            </label>
-          </div>
-        </fieldset>
-        <label><span>Budget</span><input type="number" value={form.budgetAmount} onChange={(event) => update("budgetAmount", Number(event.target.value))} required /></label>
-        <label><span>Currency</span><select value={form.budgetCurrency} onChange={(event) => update("budgetCurrency", event.target.value)}><option>INR</option><option>USD</option><option>EUR</option><option>GBP</option></select></label>
-        <label className="span-2"><span>Travel purpose</span><textarea value={form.purpose} onChange={(event) => update("purpose", event.target.value)} required /></label>
+        <label><span>Return date</span><input type="date" value={form.returnDate} onChange={(event) => update("returnDate", event.target.value)} required /></label>
         <fieldset className="span-2 option-field">
           <legend>Preferences</legend>
           <div className="option-chip-grid">
@@ -1429,6 +1428,7 @@ function TravelRequestForm({
       </div>
       {formStatus ? <p className="form-status" role="status">{formStatus}</p> : null}
       <div className="button-row">
+        {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
         <button className="primary-button" type="submit" disabled={submitting}><ClipboardCheck size={16} /> {submitting ? "Creating..." : submitLabel}</button>
       </div>
     </form>
@@ -1476,6 +1476,8 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
     || draft.groundTransferOffers.find((offer) => offer.selected)
     || draft.groundTransferOffers[0];
   const recoveryMode = draft.criticalIssueStatus === "Urgent";
+  const agentNotes = draft.agentNotes || [];
+  const travelerProfileWarning = agentNotes.find((note) => /register or update their profile/i.test(note));
 
   useEffect(() => {
     setDraft(request);
@@ -1508,8 +1510,6 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
       purpose: source.purpose,
       preferences: source.preferences,
       specialRequests: source.specialRequests,
-      budgetAmount: source.budgetAmount,
-      budgetCurrency: source.budgetCurrency,
       budgetPolicyCheck: source.budgetPolicyCheck,
       recommendedPlans: source.recommendedPlans,
       flightOffers: source.flightOffers,
@@ -1523,7 +1523,6 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
       customerMessageDraft: source.customerMessageDraft,
       finalItineraryDraft: source.finalItineraryDraft,
       status: source.status,
-      budgetStatus: source.budgetStatus,
       approvalStatus: source.approvalStatus,
       finalApproved: source.finalApproved
     };
@@ -1606,10 +1605,15 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
   }
 
   async function sendApproval() {
+    const recipientEmail = draft.requesterEmail || draft.travellerEmail;
+    if (!recipientEmail) {
+      setStatusMessage("Approval email needs a sender or traveller email on the request.");
+      return;
+    }
     try {
       const result = await sendCorporateRequestNotification(draft.id, {
         kind: "approval_request",
-        to: [draft.travellerEmail].filter(Boolean),
+        to: [recipientEmail],
         note: draft.customerMessageDraft || draft.aiSummary,
         attach_itinerary: false
       });
@@ -1676,8 +1680,7 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
     if (!prompt || assistantStatus === "responding") return;
     const localUpdate = buildNationalityGuideUpdate(prompt)
       || buildDateGuideUpdate(prompt)
-      || buildTextFieldGuideUpdate(prompt)
-      || buildBudgetGuideUpdate(prompt);
+      || buildTextFieldGuideUpdate(prompt);
     if (localUpdate) {
       setGuideMessage(localUpdate.guideMessage);
       setCommandInput("");
@@ -1742,37 +1745,6 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
     } finally {
       setAssistantStatus("idle");
     }
-  }
-
-  function buildBudgetGuideUpdate(prompt: string) {
-    const budgetCommand = parseBudgetCommand(prompt);
-    if (!budgetCommand) return null;
-    const selected = draft.recommendedPlans.find((plan) => plan.selected) || draft.recommendedPlans[0];
-    const canCompare = selected && selected.currency === budgetCommand.currency;
-    const budgetStatus: CorporateTravelRequest["budgetStatus"] = canCompare
-      ? selected.totalAmount <= budgetCommand.amount
-        ? "clear"
-        : selected.totalAmount <= budgetCommand.amount * 1.1
-          ? "attention"
-          : "blocked"
-      : draft.budgetStatus;
-    const nextDraft = {
-      ...draft,
-      budgetAmount: budgetCommand.amount,
-      budgetCurrency: budgetCommand.currency,
-      budgetStatus,
-      approvalStatus: budgetStatus === "clear" ? "Not Required" as const : draft.approvalStatus,
-      budgetPolicyCheck: canCompare
-        ? `Budget updated to ${formatMoney(budgetCommand.amount, budgetCommand.currency)}. Selected option is ${formatMoney(selected.totalAmount, selected.currency)}.`
-        : `Budget updated to ${formatMoney(budgetCommand.amount, budgetCommand.currency)}.`,
-      finalApproved: false,
-      lastUpdated: new Date().toISOString()
-    };
-    return {
-      nextDraft,
-      guideMessage: `Budget updated to ${formatMoney(budgetCommand.amount, budgetCommand.currency)} and saved to the request.`,
-      statusMessage: "Budget updated and saved."
-    };
   }
 
   function buildNationalityGuideUpdate(prompt: string) {
@@ -1899,7 +1871,7 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
           <span className="request-card-id">{draft.id}</span>
           <p>{draft.company} · {draft.purpose || "Business travel"}</p>
           <strong>{routeText(draft)}</strong>
-          <span>{formatDate(draft.departDate)} - {formatDate(draft.returnDate)} · Budget {formatMoney(draft.budgetAmount, draft.budgetCurrency)}</span>
+          <span>{formatDate(draft.departDate)} - {formatDate(draft.returnDate)} · Tier-based hotel policy</span>
         </div>
         <div>
           <StatusPill value={draft.status} />
@@ -1914,6 +1886,15 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
             <span>{draft.criticalIssue || "Urgent travel disruption"}</span>
           </div>
           <button className="secondary-button" type="button" onClick={() => setActiveStep("flights")}>Open Recovery Step</button>
+        </div>
+      ) : null}
+      {travelerProfileWarning ? (
+        <div className="critical-issue-banner" role="status">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>New traveler profile</strong>
+            <span>{travelerProfileWarning}</span>
+          </div>
         </div>
       ) : null}
       <div className="builder-stepper" aria-label="Guided itinerary steps">
@@ -1970,7 +1951,7 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
                   onSelect={selectFlightOffer}
                 />
               ) : (
-                <div className="empty-panel">Generate a plan to load Duffel or planning flight options.</div>
+                <div className="empty-panel">Generate a plan to load live or planning flight options.</div>
               )}
               <PlanSummaryStrip plan={selectedPlan} />
             </section>
@@ -1985,7 +1966,7 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
                   onSelect={selectHotelOffer}
                 />
               ) : (
-                <div className="empty-panel">Generate a plan to load Booking.com or planning hotel options.</div>
+                <div className="empty-panel">Generate a plan to load live or planning hotel options.</div>
               )}
               <PlanSummaryStrip plan={selectedPlan} />
             </section>
@@ -2015,40 +1996,15 @@ function RequestDetail({ request, onChange, initialStep = "missing" }: { request
           ) : null}
           {activeStep === "approval" ? (
             <section className="builder-step-panel" aria-label="Approval and export">
-              <EditableSection title="Budget Policy Check" icon={WalletCards} value={draft.budgetPolicyCheck} onChange={(value) => updateDraft("budgetPolicyCheck", value)} />
+              <EditableSection title="Policy Check" icon={WalletCards} value={draft.budgetPolicyCheck} onChange={(value) => updateDraft("budgetPolicyCheck", value)} />
               <div className="detail-info-card blue">
-                <strong>Budget</strong>
-                <span>{formatMoney(draft.budgetAmount, draft.budgetCurrency)}</span>
-                <strong>Budget status</strong>
-                <span>{draft.budgetStatus}</span>
+                <strong>Hotel tier</strong>
+                <span>Based on submitted band</span>
                 <strong>Approval</strong>
                 <span>{draft.approvalStatus}</span>
                 <strong>Selected cost</strong>
                 <span>{selectedPlan ? formatMoney(selectedPlan.totalAmount, selectedPlan.currency) : "No plan selected"}</span>
               </div>
-              <label className="approval-control">
-                <span>Approved budget</span>
-                <input
-                  aria-label="Approved budget"
-                  min={1}
-                  type="number"
-                  value={draft.budgetAmount}
-                  onChange={(event) => updateDraft("budgetAmount", Number(event.target.value))}
-                />
-              </label>
-              <label className="approval-control">
-                <span>Budget currency</span>
-                <select
-                  aria-label="Budget currency"
-                  value={draft.budgetCurrency}
-                  onChange={(event) => updateDraft("budgetCurrency", event.target.value)}
-                >
-                  <option>INR</option>
-                  <option>USD</option>
-                  <option>EUR</option>
-                  <option>GBP</option>
-                </select>
-              </label>
               <label className="approval-control">
                 <span>Approval status</span>
                 <select
@@ -2119,7 +2075,7 @@ function BuilderSummary({
         <h3>{request.purpose || "Business trip"}</h3>
         <p>{routeText(request)}</p>
         <p>{formatDate(request.departDate)} - {formatDate(request.returnDate)}</p>
-        <p>Budget {formatMoney(request.budgetAmount, request.budgetCurrency)}</p>
+        <p>Hotel tier follows submitted band</p>
       </section>
       <section>
         <p className="eyebrow">Data Loaded</p>
@@ -2313,7 +2269,7 @@ function defaultGuideMessage(
   if (step === "flights") {
     return recoveryMode
       ? "This is a recovery workflow. Pick a same-origin replacement first, then we will adjust hotels and the traveler update."
-      : "Pick the flight that best balances policy, schedule, and budget. You can type constraints to update the visible options.";
+      : "Pick the flight that best balances policy and schedule. You can type constraints to update the visible options.";
   }
   if (step === "hotel") return selectedFlight ? `Flight selected: ${selectedFlight.airline}. Now choose a hotel that fits the arrival timing and company policy.` : "Select a flight first, then choose the hotel.";
   if (step === "transfer") return "Choose the airport pickup option that fits the arrival timing, passenger count, and baggage needs.";
@@ -2330,16 +2286,16 @@ function helperExplanation(
 ) {
   if (step === "missing") return "This step collects blockers before options are trusted. Saving here updates the same request record used by the later flight, hotel, itinerary, and approval steps.";
   if (step === "flights") return selectedFlight
-    ? `${selectedFlight.airline} is selected. The card shows provider, timings, cost, source, and whether it is a recovery option. No ticket is booked from this screen.`
+    ? `${selectedFlight.airline} is selected. The card shows timings, cost, source type, and whether it is a recovery option.`
     : "Select a flight card to make it the active option for hotel planning and itinerary drafting.";
   if (step === "hotel") return selectedHotel
-    ? `${selectedHotel.name} is selected. Hotel selection updates the itinerary context but does not create a booking.`
-    : "Hotel cards use Booking.com data when connected or stable planning images when provider photos are missing.";
-  if (step === "transfer") return "Transfer cards use varied planning estimates for the POC. Selecting one does not create a transfer order.";
+    ? `${selectedHotel.name} is selected. Hotel selection updates the itinerary context for the pipeline test.`
+    : "Hotel cards use live data when connected or stable planning images when photos are missing.";
+  if (step === "transfer") return "Transfer cards use varied planning estimates for the pipeline test.";
   if (step === "itinerary") return "This is the traveler-facing draft. You can edit it directly or ask the guide to rewrite the current draft.";
   if (step === "client_review") return "This tab tracks the signed dashboard link, client approval, edit requests, and revision history for the traveler-facing review flow.";
   return request.approvalStatus === "Required"
-    ? "Approval is required before final export. Mark approval as received only after the manager has approved the itinerary."
+    ? "Approval is required before final export. Mark approval as received only after the approval band owner has approved the itinerary."
     : "Approval is not currently required. Final export is still gated by agent review.";
 }
 
@@ -2350,7 +2306,7 @@ function helperSuggestionFor(step: WorkspaceStep, request: CorporateTravelReques
     : "Rank the visible flights by policy fit, arrival timing, and total cost.";
   if (step === "hotel") return "Prioritize hotels near the client office with refundable terms and policy-fit nightly cost.";
   if (step === "transfer") return "Prioritize airport pickup with clear pickup timing, passenger fit, and baggage buffer.";
-  if (step === "itinerary") return "Rewrite the itinerary so it clearly states selected flight, selected hotel, pending approval, and no booking confirmation.";
+  if (step === "itinerary") return "Rewrite the itinerary so it clearly states selected flight, selected hotel, pending approval, and special service requests.";
   if (step === "client_review") return "Summarize the current client review state and next action for the agent.";
   return "Summarize why approval is or is not required before final export.";
 }
@@ -2385,7 +2341,7 @@ function FlightOfferSelector({
     <section className="flight-offer-section">
       <div className="card-title-row">
         <h3><Plane size={17} /> Select Airline</h3>
-        <StatusPill value={offers.some((offer) => offer.source === "duffel") ? "Live Provider Options" : "AI Ranked Options"} />
+        <StatusPill value={offers.some((offer) => offer.source === "duffel") ? "Live Flight Options" : "AI Ranked Options"} />
       </div>
       <div className="flight-offer-grid">
         {offers.map((offer) => (
@@ -2398,13 +2354,13 @@ function FlightOfferSelector({
               </button>
             </div>
             <div className="offer-card-badges">
-              <StatusPill value={offer.source === "duffel" ? "Live Duffel" : "Planning option"} />
+              <StatusPill value={offer.source === "duffel" ? "Live flight" : "Planning option"} />
               {recoveryMode ? <StatusPill value="Recovery" /> : null}
             </div>
             <strong>{formatMoney(offer.totalAmount, offer.currency)}</strong>
             <p>{offer.outbound}</p>
             {offer.returnLeg ? <p>{offer.returnLeg}</p> : null}
-            <small>{offer.provider}</small>
+            <small>{offer.source === "duffel" ? "Live fare source" : "Planning source"}</small>
             {offer.expiresAt ? <small>Offer expires {offer.expiresAt}</small> : null}
           </article>
         ))}
@@ -2438,7 +2394,7 @@ function HotelOfferSelector({
     <section className="flight-offer-section">
       <div className="card-title-row">
         <h3><Building2 size={17} /> Select Hotel</h3>
-        <StatusPill value={offers.some((offer) => offer.source === "booking") ? "Booking.com Options" : "Planning Options"} />
+        <StatusPill value={offers.some((offer) => offer.source === "booking") ? "Live Hotel Options" : "Planning Options"} />
       </div>
       <div className="flight-offer-grid">
         {offers.map((offer) => (
@@ -2458,7 +2414,7 @@ function HotelOfferSelector({
             <p>{offer.summary}</p>
             {offer.address ? <p>{offer.address}</p> : null}
             <small>{offer.starRating ? `${offer.starRating}-star · ` : ""}{offer.nights} night{offer.nights === 1 ? "" : "s"} · {offer.rooms} room · {offer.guests} guest{offer.guests === 1 ? "" : "s"}</small>
-            <small>{offer.provider}</small>
+            <small>{offer.source === "booking" ? "Live lodging source" : "Planning source"}</small>
           </article>
         ))}
       </div>
@@ -2499,7 +2455,7 @@ function GroundTransferSelector({
             <p>{offer.dropoffLabel}{offer.dropoffAddress ? ` · ${offer.dropoffAddress}` : ""}</p>
             {offer.baggage ? <small>{offer.baggage}</small> : null}
             {offer.cancellationNotes ? <small>{offer.cancellationNotes}</small> : null}
-            <small>{offer.provider}</small>
+            <small>Ground transport source</small>
           </article>
         ))}
       </div>
@@ -2554,6 +2510,7 @@ function ClientReviewWorkspace({ request }: { request: CorporateTravelRequest })
 
 function reviewActionLabel(action: string) {
   if (action === "approved") return "Approved";
+  if (action === "cancelled") return "Cancelled";
   if (action === "edits_requested") return "Edits Requested";
   if (action === "agent_review_required") return "Agent Review Required";
   return "Review Link Sent";
@@ -2572,13 +2529,26 @@ function hotelImageFor(offer: CorporateHotelOffer) {
   return "/travel-media/hotel-business.png";
 }
 
+const CLIENT_REVIEW_MAX_EDIT_ROUNDS = 3;
+
 export function ClientReviewPortalScreen({ token }: { token: string }) {
   const [review, setReview] = useState<ClientReviewResponse | null>(null);
-  const [selectedOption, setSelectedOption] = useState(1);
+  const [activeOptionIndex, setActiveOptionIndex] = useState<number | null>(null);
+  const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [editRequest, setEditRequest] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"approve" | "edits" | "cancel" | null>(null);
+  const submitting = pendingAction !== null;
+  const approved = review?.status === "Approved";
+  const cancelled = review?.status === "Cancelled";
+  const agentReviewRequired = review?.status === "Agent Review Required";
+  const editRoundsRemaining = review ? Math.max(0, CLIENT_REVIEW_MAX_EDIT_ROUNDS - review.revisionRound) : CLIENT_REVIEW_MAX_EDIT_ROUNDS;
+  const canRequestEdits = Boolean(review && !approved && !cancelled && !agentReviewRequired && editRoundsRemaining > 0);
+  const approvedOptionIndex = review?.history.slice().reverse().find((event) => event.action === "approved")?.selectedOptionIndex || selectedOption;
+  const activeOption = review?.options.find((option) => option.optionIndex === activeOptionIndex) || review?.options[0] || null;
+  const activeOptionPosition = review && activeOption ? review.options.findIndex((option) => option.optionIndex === activeOption.optionIndex) : -1;
+  const hasMultipleOptions = (review?.options.length || 0) > 1;
 
   useEffect(() => {
     let mounted = true;
@@ -2588,7 +2558,8 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
         const result = await getClientReview(token);
         if (!mounted) return;
         setReview(result);
-        setSelectedOption(result.options[0]?.optionIndex || 1);
+        setActiveOptionIndex(result.options[0]?.optionIndex || null);
+        setSelectedOption(null);
         setStatusMessage("");
       } catch {
         if (mounted) setStatusMessage("This review link is unavailable or expired.");
@@ -2603,17 +2574,18 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
   }, [token]);
 
   async function approveOption(optionIndex: number) {
-    setSubmitting(true);
+    setSelectedOption(optionIndex);
+    setPendingAction("approve");
     setStatusMessage("");
     try {
       const result = await submitClientReview(token, { action: "approve", selected_option_index: optionIndex });
       setReview(result);
       setSelectedOption(optionIndex);
-      setStatusMessage("Approved. Your final itinerary has been queued for email delivery.");
+      setStatusMessage("Thank you. You will receive a mail shortly.");
     } catch {
       setStatusMessage("Approval could not be submitted. Please contact the travel team.");
     } finally {
-      setSubmitting(false);
+      setPendingAction(null);
     }
   }
 
@@ -2623,18 +2595,47 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
       setStatusMessage("Add the requested edits before submitting.");
       return;
     }
-    setSubmitting(true);
-    setStatusMessage("");
+    if (!canRequestEdits) {
+      setStatusMessage("The 3 update tries have been used. The travel team will review any further changes.");
+      return;
+    }
+    setPendingAction("edits");
+    setStatusMessage("Updating itineraries. This can take a moment.");
     try {
       const result = await submitClientReview(token, { action: "request_edits", edit_request_text: comment });
       setReview(result);
+      setActiveOptionIndex(result.options[0]?.optionIndex || null);
+      setSelectedOption(null);
       setEditRequest("");
-      setStatusMessage(result.status === "Agent Review Required" ? "Your edits were sent to the travel team for review." : "Edits submitted. A refreshed review link has been emailed.");
-    } catch {
-      setStatusMessage("Edit request could not be submitted. Please contact the travel team.");
+      setStatusMessage(result.status === "Agent Review Required" ? "Your edits were sent to the travel team for review." : "Itineraries updated on screen. Review the refreshed options below.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Edit request could not be submitted. Please contact the travel team.");
     } finally {
-      setSubmitting(false);
+      setPendingAction(null);
     }
+  }
+
+  async function cancelReview() {
+    setPendingAction("cancel");
+    setStatusMessage("");
+    try {
+      const result = await submitClientReview(token, { action: "cancel" });
+      setReview(result);
+      setActiveOptionIndex(null);
+      setSelectedOption(null);
+      setStatusMessage("Request cancelled. The travel team will not finalize this itinerary.");
+    } catch {
+      setStatusMessage("Cancellation could not be submitted. Please contact the travel team.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  function showRelativeOption(offset: number) {
+    if (!review?.options.length) return;
+    const currentPosition = activeOptionPosition >= 0 ? activeOptionPosition : 0;
+    const nextPosition = (currentPosition + offset + review.options.length) % review.options.length;
+    setActiveOptionIndex(review.options[nextPosition].optionIndex);
   }
 
   return (
@@ -2655,9 +2656,28 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
         ) : null}
       </section>
       {statusMessage ? <p className="workspace-status" role="status">{statusMessage}</p> : null}
-      {loading ? <section className="empty-panel">Loading review dashboard...</section> : null}
+      {loading ? <section className="empty-panel">Opening itinerary review...</section> : null}
       {review ? (
         <>
+          {approved ? (
+            <section className="client-thank-you-panel">
+              <CheckCircle2 size={34} />
+              <div>
+                <h2>Thank you</h2>
+                <p>You will receive a mail shortly with the approved itinerary.</p>
+                {approvedOptionIndex ? <span>Approved option {approvedOptionIndex}</span> : null}
+              </div>
+            </section>
+          ) : null}
+          {cancelled ? (
+            <section className="client-thank-you-panel">
+              <Trash2 size={34} />
+              <div>
+                <h2>Request cancelled</h2>
+                <p>The travel team will not finalize this itinerary.</p>
+              </div>
+            </section>
+          ) : null}
           {review.changeSummary ? (
             <section className="ai-recommendation-strip">
               <Sparkles size={16} />
@@ -2667,33 +2687,100 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
               </div>
             </section>
           ) : null}
-          <section className="client-review-grid" aria-label="Itinerary options">
-            {review.options.map((option) => (
-              <ClientReviewOptionCard
-                key={option.optionIndex}
-                option={option}
-                selected={selectedOption === option.optionIndex}
-                submitting={submitting}
-                onSelect={() => setSelectedOption(option.optionIndex)}
-                onApprove={() => void approveOption(option.optionIndex)}
-              />
-            ))}
-          </section>
-          <section className="client-edit-panel">
-            <div>
-              <h2>Request Edits</h2>
-              <p>{review.specialRequestNotice}</p>
-            </div>
-            <textarea
-              aria-label="Requested itinerary edits"
-              value={editRequest}
-              onChange={(event) => setEditRequest(event.target.value)}
-              placeholder="Example: move hotel closer to office, avoid late arrival, add extra luggage transfer buffer"
-            />
-            <button className="secondary-button" type="button" onClick={() => void requestEdits()} disabled={submitting || review.status === "Approved"}>
-              <MessageSquare size={16} /> Submit Edit Request
-            </button>
-          </section>
+          {!approved && !cancelled ? (
+            <>
+              {pendingAction === "edits" ? (
+                <section className="client-review-loading" aria-label="Updating itinerary options">
+                  <RefreshCw size={18} />
+                  <span>Updating itinerary options...</span>
+                </section>
+              ) : null}
+              <section className="client-review-switcher" aria-label="Itinerary option selector">
+                <div className="client-review-tabs" role="tablist" aria-label="Itinerary options">
+                  {review.options.map((option) => {
+                    const displayName = clientReviewOptionDisplayName(option);
+                    return (
+                      <button
+                        key={option.optionIndex}
+                        className={activeOption?.optionIndex === option.optionIndex ? "client-review-tab active" : "client-review-tab"}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeOption?.optionIndex === option.optionIndex}
+                        onClick={() => setActiveOptionIndex(option.optionIndex)}
+                      >
+                        <span>Option {option.optionIndex}</span>
+                        <strong>{displayName}</strong>
+                        <em>{formatMoney(option.estimatedCost, option.currency)}</em>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="client-review-turn-controls">
+                  <button className="secondary-button" type="button" onClick={() => showRelativeOption(-1)} disabled={!hasMultipleOptions}>
+                    <ArrowLeft size={16} /> Previous
+                  </button>
+                  <span>{activeOptionPosition + 1} of {review.options.length}</span>
+                  <button className="secondary-button" type="button" onClick={() => showRelativeOption(1)} disabled={!hasMultipleOptions}>
+                    Next suggestion <ArrowRight size={16} />
+                  </button>
+                </div>
+              </section>
+              <section className="client-review-stage client-review-carousel" aria-label="Itinerary option details" aria-busy={pendingAction === "edits"}>
+                <div
+                  className="client-review-track"
+                  style={{ transform: `translateX(-${Math.max(0, activeOptionPosition) * 100}%)` }}
+                >
+                  {review.options.map((option) => (
+                    <div
+                      className="client-review-slide"
+                      key={`${review.revisionRound}-${option.optionIndex}`}
+                      aria-hidden={activeOption?.optionIndex !== option.optionIndex}
+                    >
+                      <ClientReviewOptionCard
+                        option={option}
+                        displayName={clientReviewOptionDisplayName(option)}
+                        selected={selectedOption === option.optionIndex}
+                        submitting={submitting}
+                        approving={pendingAction === "approve" && selectedOption === option.optionIndex}
+                        onSelect={() => setSelectedOption(option.optionIndex)}
+                        onApprove={() => void approveOption(option.optionIndex)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+              <section className="client-edit-panel">
+                <div>
+                  <div className="client-edit-title">
+                    <h2>Request Edits</h2>
+                    <span className="client-edit-help" tabIndex={0} aria-label="What can I request?">
+                      <Info size={16} />
+                    </span>
+                    <span className="client-edit-tooltip" role="tooltip">
+                      You can ask to change dates, destination, meeting location, hotel area, airline, traveler contact, passport or visa expiry. You can also type skip hotel or skip cab. Budget, band, policy, and cabin changes stay protected.
+                    </span>
+                  </div>
+                  <p>{review.specialRequestNotice}</p>
+                  <span>{editRoundsRemaining} of {CLIENT_REVIEW_MAX_EDIT_ROUNDS} update tries remaining</span>
+                </div>
+                <textarea
+                  aria-label="Requested itinerary edits"
+                  value={editRequest}
+                  onChange={(event) => setEditRequest(event.target.value)}
+                  placeholder="Example: change dates to 2026-07-10 to 2026-07-14, skip hotel, skip cab, move hotel closer to office"
+                  disabled={submitting || !canRequestEdits}
+                />
+                <button className="secondary-button" type="button" onClick={() => void requestEdits()} disabled={submitting || !canRequestEdits}>
+                  {pendingAction === "edits" ? <RefreshCw className="spin-icon" size={16} /> : <MessageSquare size={16} />}
+                  {pendingAction === "edits" ? "Updating Itineraries..." : "Update Itineraries"}
+                </button>
+                <button className="secondary-button" type="button" onClick={() => void cancelReview()} disabled={submitting}>
+                  {pendingAction === "cancel" ? <RefreshCw className="spin-icon" size={16} /> : <Trash2 size={16} />}
+                  {pendingAction === "cancel" ? "Cancelling..." : "Cancel Request"}
+                </button>
+              </section>
+            </>
+          ) : null}
         </>
       ) : null}
     </main>
@@ -2702,76 +2789,450 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
 
 function ClientReviewOptionCard({
   option,
+  displayName,
   selected,
   submitting,
+  approving,
   onSelect,
   onApprove
 }: {
   option: ClientReviewOption;
+  displayName: string;
   selected: boolean;
   submitting: boolean;
+  approving: boolean;
   onSelect: () => void;
   onApprove: () => void;
 }) {
+  const flightRows = flightReviewRows(option);
+  const hotelRows = hotelReviewRows(option);
+  const transferRows = transferReviewRows(option);
+  const proofPoints = option.pros.length ? option.pros : ["Balanced itinerary"];
+  const watchOuts = option.cons.length ? option.cons : ["Final provider confirmation required"];
+  const reasonPoints = reviewReasonPoints(option.recommendationReason);
+
   return (
     <article className={selected ? "client-review-option selected" : "client-review-option"}>
-      <div className="card-title-row">
-        <h2>Option {option.optionIndex}: {option.optionName}</h2>
-        <button className="secondary-button" type="button" onClick={onSelect}>{selected ? "Selected" : "Select"}</button>
-      </div>
-      <strong>{formatMoney(option.estimatedCost, option.currency)}</strong>
-      <p>{option.recommendationReason}</p>
-      <div className="review-segment-list">
-        <ReviewSegment icon={Plane} label="Flight" value={option.flight?.summary || option.flightSummary} detail={option.flight?.outbound} />
-        <ReviewSegment icon={Building2} label="Hotel" value={option.hotel?.name || option.hotelSummary} detail={hotelReviewDetail(option)} />
-        <ReviewSegment icon={Car} label="Airport Transfer" value={option.transfer?.vehicleType || option.transferSummary} detail={transferReviewDetail(option)} />
-      </div>
-      <div className="offer-card-badges">
+      <header className="client-option-header">
+        <div className="client-option-title">
+          <span>Option {option.optionIndex}</span>
+          <h2>{displayName}</h2>
+        </div>
+        <button className={selected ? "selected-option-button" : "secondary-button"} type="button" onClick={onSelect}>
+          {selected ? "Selected" : "Select"}
+        </button>
+      </header>
+      <div className="client-option-price-row">
+        <div>
+          <span>Estimated total</span>
+          <strong>{formatMoney(option.estimatedCost, option.currency)}</strong>
+        </div>
         <StatusPill value={option.policyStatus} />
-        {option.pros.slice(0, 2).map((item) => <StatusPill key={item} value={item} />)}
       </div>
-      <button className="primary-button" type="button" onClick={onApprove} disabled={submitting}>
-        <CheckCircle2 size={16} /> Approve Option
+      <section className="client-option-reason" aria-label={`Reason for option ${option.optionIndex}`}>
+        <div>
+          <Sparkles size={16} />
+          <strong>{option.reasoningSourceLabel}</strong>
+        </div>
+        <ul>
+          {reasonPoints.map((point) => <li key={point}>{point}</li>)}
+        </ul>
+      </section>
+      <div className="client-option-proof">
+        <div>
+          <strong>Best for</strong>
+          <div className="client-option-chip-row">
+            {proofPoints.slice(0, 3).map((item) => <span key={item}>{item}</span>)}
+          </div>
+        </div>
+        <div>
+          <strong>Watch-outs</strong>
+          <div className="client-option-chip-row muted">
+            {watchOuts.slice(0, 2).map((item) => <span key={item}>{item}</span>)}
+          </div>
+        </div>
+      </div>
+      <div className="review-segment-list">
+        <FlightReviewSegment option={option} rows={flightRows} />
+        <ReviewSegment
+          icon={Building2}
+          label={option.hotel?.name || "Hotel"}
+          value={option.hotel?.summary || option.hotelSummary}
+          rows={hotelRows}
+          specialRequests={option.hotel?.unsentSpecialRequests || []}
+          media={option.hotel ? <HotelReviewImage hotel={option.hotel} /> : null}
+        />
+        <ReviewSegment icon={Car} label="Airport Transfer" value={option.transfer?.vehicleType || option.transferSummary} rows={transferRows} />
+      </div>
+      <button className="primary-button" type="button" onClick={onApprove} disabled={submitting || !selected}>
+        {approving ? <RefreshCw className="spin-icon" size={16} /> : <CheckCircle2 size={16} />}
+        {approving ? "Approving..." : "Approve Option"}
       </button>
     </article>
   );
 }
 
-function ReviewSegment({ icon: Icon, label, value, detail }: { icon: LucideIcon; label: string; value: string; detail?: string | null }) {
+function clientReviewOptionDisplayName(option: ClientReviewOption) {
+  if (option.optionName === "Best tier fit") return "Recommended value";
+  if (option.optionName === "Fastest route") return "Fastest practical route";
+  if (option.optionName === "Comfort-focused option") return "Comfort upgrade";
+  return option.optionName;
+}
+
+function FlightReviewSegment({ option, rows }: { option: ClientReviewOption; rows: ReviewDetailRow[] }) {
+  if (!option.flight) {
+    return (
+      <ReviewSegment
+        icon={Plane}
+        label="Flight"
+        value={option.flightSummary}
+        rows={rows}
+      />
+    );
+  }
+
+  const flight = option.flight;
+  const legs = flightReviewLegs(option);
+  const fare = formatMoney(flight.totalAmount, flight.currency);
+  const providerBadge = flight.source === "duffel" ? "Live flight option" : "Planning estimate";
+
   return (
-    <section className="review-segment">
-      <Icon size={17} />
-      <div>
-        <strong>{label}</strong>
-        <p>{value}</p>
-        {detail ? <span>{detail}</span> : null}
+    <section className="review-segment flight-booking-card">
+      <div className="flight-booking-header">
+        <div className="flight-airline-lockup">
+          <FlightBrandMark flight={flight} />
+          <div>
+            <div className="review-segment-title-row">
+              <strong>{flight.airline || "Airline to confirm"}</strong>
+              <span>{providerBadge}</span>
+            </div>
+            <p>{flight.summary || option.flightSummary}</p>
+          </div>
+        </div>
+        <div className="flight-fare-block">
+          <span>Flight fare</span>
+          <strong>{fare}</strong>
+        </div>
+      </div>
+      <div className="flight-leg-stack">
+        {legs.map((leg) => (
+          <div className="flight-leg-card" key={`${leg.label}-${leg.route}-${leg.departure}`}>
+            <div className="flight-leg-label">
+              <span>{leg.label}</span>
+              <strong>{leg.airline || flight.airline || "Airline to confirm"}</strong>
+            </div>
+            <div className="flight-route-board">
+              <div className="flight-time-point">
+                <strong>{leg.departure ? formatClockText(leg.departure) : "Time pending"}</strong>
+                <span>{flightEndpointText(leg.from, leg.departure)}</span>
+              </div>
+              <div className="flight-pathline">
+                <span />
+                <em>{leg.stops || "Nonstop"}</em>
+              </div>
+              <div className="flight-time-point end">
+                <strong>{leg.arrival ? formatClockText(leg.arrival) : "Time pending"}</strong>
+                <span>{flightEndpointText(leg.to, leg.arrival)}</span>
+              </div>
+            </div>
+            <div className="flight-leg-meta">
+              <span>{leg.route || "Route pending"}</span>
+              {leg.layover ? <span>{leg.layover}</span> : null}
+              {leg.duration ? <span>{leg.duration}</span> : null}
+              <span>{cabinLabel(flight.cabin)}</span>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );
 }
 
-function hotelReviewDetail(option: ClientReviewOption) {
-  if (!option.hotel) return option.hotelSummary;
-  return [
-    option.hotel.address,
-    option.hotel.checkInStartsAt ? `Check-in starts ${option.hotel.checkInStartsAt}` : "",
-    option.hotel.checkoutTime ? `Checkout ${option.hotel.checkoutTime}` : "",
-  ].filter(Boolean).join(" · ");
+function reviewReasonPoints(value: string) {
+  const clean = value.trim();
+  if (!clean) return ["Recommendation is based on the submitted trip details."];
+  const explicitLines = clean
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*[-•]\s*/, "").trim())
+    .filter(Boolean);
+  if (explicitLines.length > 1) return explicitLines.slice(0, 4);
+  return clean
+    .split(/(?<=\.)\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 4);
 }
 
-function transferReviewDetail(option: ClientReviewOption) {
-  if (!option.transfer) return option.transferSummary;
+type ReviewDetailRow = {
+  label: string;
+  value: string;
+};
+
+function ReviewSegment({
+  icon: Icon,
+  label,
+  value,
+  rows,
+  specialRequests = [],
+  badge,
+  marker,
+  media
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  rows: ReviewDetailRow[];
+  specialRequests?: string[];
+  badge?: string;
+  marker?: ReactNode;
+  media?: ReactNode;
+}) {
+  return (
+    <section className="review-segment">
+      <div className="review-segment-heading">
+        {marker || <span className="review-segment-icon"><Icon size={17} /></span>}
+        <div>
+          <div className="review-segment-title-row">
+            <strong>{label}</strong>
+            {badge ? <span>{badge}</span> : null}
+          </div>
+          <p>{value}</p>
+        </div>
+      </div>
+      {media}
+      <dl className="review-detail-list">
+        {rows.map((row) => (
+          <div key={`${row.label}-${row.value}`}>
+            <dt>{row.label}</dt>
+            <dd>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {specialRequests.length ? (
+        <div className="special-request-panel">
+          <strong>Special handling</strong>
+          <ul>
+            {specialRequests.map((item) => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function FlightBrandMark({ flight }: { flight?: ClientReviewOption["flight"] }) {
+  if (flight?.airlineLogoUrl) {
+    return (
+      <span className="airline-brand-mark">
+        <img src={flight.airlineLogoUrl} alt={`${flight.airline} logo`} />
+      </span>
+    );
+  }
+  return (
+    <span className="airline-brand-mark text">
+      {flight?.airlineCode || airlineInitials(flight?.airline || "") || <Plane size={17} />}
+    </span>
+  );
+}
+
+function HotelReviewImage({ hotel }: { hotel: NonNullable<ClientReviewOption["hotel"]> }) {
+  const imageUrl = hotel.imageUrl || hotelReviewFallbackImage(hotel);
+  return <img className="review-hotel-image" src={imageUrl} alt={`${hotel.name} hotel visual`} />;
+}
+
+function flightReviewSubtitle(option: ClientReviewOption) {
+  if (!option.flight) return option.flightSummary;
+  const provider = option.flight.source === "duffel" ? "Live flight offer" : "Planning estimate";
+  return `${provider} · ${option.flight.summary}`;
+}
+
+function flightReviewRows(option: ClientReviewOption): ReviewDetailRow[] {
+  const timing = parseFlightTiming(option.flight?.outbound || "", option.flight?.airline || "");
+  const returnTiming = parseFlightTiming(option.flight?.returnLeg || "", option.flight?.airline || "");
+  const rows: ReviewDetailRow[] = [
+    { label: option.flight?.returnLeg ? "Outbound flight" : "Flight", value: flightRouteWithAirline(timing) || option.flightSummary || "Route pending" },
+  ];
+  if (option.flight) {
+    rows.push({ label: "Outbound airline", value: timing.airline || option.flight.airline || "Airline to confirm" });
+    if (timing.stops) {
+      rows.push({ label: "Outbound stops", value: timing.stops });
+    }
+    const outboundLayover = timing.layover || flightLayoverText(timing.route, timing.stops);
+    if (outboundLayover) {
+      rows.push({ label: "Outbound layover", value: outboundLayover });
+    }
+  }
+  rows.push(
+    { label: option.flight?.returnLeg ? "Outbound depart" : "Depart", value: timing.departure ? formatReviewDateTimeText(timing.departure) : "Departure time pending" },
+    { label: option.flight?.returnLeg ? "Outbound arrive" : "Arrive", value: timing.arrival ? formatReviewDateTimeText(timing.arrival) : "Arrival time pending" },
+  );
+  if (option.flight?.returnLeg) {
+    rows.push(
+      { label: "Return flight", value: flightRouteWithAirline(returnTiming) || option.flight.returnLeg },
+      { label: "Return airline", value: returnTiming.airline || "Return airline to confirm" },
+      ...(returnTiming.stops ? [{ label: "Return stops", value: returnTiming.stops }] : []),
+      ...((returnTiming.layover || flightLayoverText(returnTiming.route, returnTiming.stops)) ? [{
+        label: "Return layover",
+        value: returnTiming.layover || flightLayoverText(returnTiming.route, returnTiming.stops),
+      }] : []),
+      { label: "Return depart", value: returnTiming.departure ? formatReviewDateTimeText(returnTiming.departure) : "Return departure time pending" },
+      { label: "Return arrive", value: returnTiming.arrival ? formatReviewDateTimeText(returnTiming.arrival) : "Return arrival time pending" },
+    );
+  }
+  if (option.flight) {
+    rows.push({ label: "Total flight fare", value: formatMoney(option.flight.totalAmount, option.flight.currency) });
+  }
+  if (option.flight?.cabin) {
+    rows.push({ label: "Cabin", value: cabinLabel(option.flight.cabin) });
+  }
+  return rows;
+}
+
+function flightReviewLegs(option: ClientReviewOption) {
+  const outbound = parseFlightTiming(option.flight?.outbound || "", option.flight?.airline || "");
+  const returnLeg = parseFlightTiming(option.flight?.returnLeg || "", option.flight?.airline || "");
+  const outboundAirports = flightRouteAirports(outbound.route);
+  const returnAirports = flightRouteAirports(returnLeg.route);
+  const legs = [
+    {
+      label: option.flight?.returnLeg ? "Outbound" : "Flight",
+      route: outbound.route,
+      airline: outbound.airline || option.flight?.airline || "",
+      stops: outbound.stops,
+      layover: outbound.layover || flightLayoverText(outbound.route, outbound.stops),
+      departure: outbound.departure,
+      arrival: outbound.arrival,
+      from: outboundAirports.from,
+      to: outboundAirports.to,
+      duration: flightLegDuration(option, "outbound"),
+    },
+  ];
+  if (option.flight?.returnLeg) {
+    legs.push({
+      label: "Return",
+      route: returnLeg.route,
+      airline: returnLeg.airline || option.flight.airline || "",
+      stops: returnLeg.stops,
+      layover: returnLeg.layover || flightLayoverText(returnLeg.route, returnLeg.stops),
+      departure: returnLeg.departure,
+      arrival: returnLeg.arrival,
+      from: returnAirports.from,
+      to: returnAirports.to,
+      duration: flightLegDuration(option, "return"),
+    });
+  }
+  return legs;
+}
+
+function flightRouteAirports(route: string) {
+  const airports = route.split(/\s*->\s*/).map((item) => item.trim()).filter(Boolean);
+  return {
+    from: airports[0] || "Origin",
+    to: airports.length > 1 ? airports[airports.length - 1] : "Destination",
+  };
+}
+
+function flightEndpointText(airport: string, value: string) {
+  const dateText = value ? formatDate(value) : "Date pending";
+  return `${airport} · ${dateText}`;
+}
+
+function flightLayoverText(route: string, stops: string) {
+  if (!stops || /^nonstop$/i.test(stops)) return "";
+  const via = stops.match(/\bvia\s+(.+)$/i)?.[1]?.trim();
+  if (via) return `Layover ${via}`;
+  const airports = route.split(/\s*->\s*/).map((item) => item.trim()).filter(Boolean);
+  const layovers = airports.slice(1, -1);
+  if (layovers.length) return `Layover ${layovers.join(", ")}`;
+  return "Layover to confirm";
+}
+
+function flightLegDuration(option: ClientReviewOption, direction: "outbound" | "return") {
+  const notes = option.flight?.notes || [];
+  const prefix = direction === "outbound" ? /^Outbound\s+Duration:\s*(.+)$/i : /^Return\s+Duration:\s*(.+)$/i;
+  const directed = notes.find((note) => prefix.test(note));
+  if (directed) return directed.replace(prefix, "$1").trim();
+  if (direction === "outbound") {
+    const general = notes.find((note) => /^Duration:\s*/i.test(note));
+    if (general) return general.replace(/^Duration:\s*/i, "").trim();
+  }
+  return "";
+}
+
+function hotelReviewRows(option: ClientReviewOption): ReviewDetailRow[] {
+  if (!option.hotel) return [{ label: "Hotel", value: option.hotelSummary || "Hotel pending" }];
   return [
-    `${option.transfer.pickupAirportCode}${option.transfer.pickupTime ? ` at ${formatDateTimeText(option.transfer.pickupTime)}` : ""}`,
-    option.transfer.dropoffLabel,
-    option.transfer.baggage,
-  ].filter(Boolean).join(" · ");
+    { label: "Location", value: option.hotel.address || "Address pending" },
+    { label: "Check-in", value: option.hotel.checkIn ? `${formatDate(option.hotel.checkIn)}${option.hotel.checkInStartsAt ? ` from ${formatClockText(option.hotel.checkInStartsAt)}` : ""}` : "Check-in date pending" },
+    { label: "Checkout", value: option.hotel.checkOut ? `${formatDate(option.hotel.checkOut)}${option.hotel.checkoutTime ? ` by ${formatClockText(option.hotel.checkoutTime)}` : ""}` : "Checkout date pending" },
+    { label: "Hotel cost", value: formatMoney(option.hotel.totalAmount, option.hotel.currency) },
+    { label: "Room", value: option.hotel.roomNotes || "Room details require hotel confirmation" },
+  ];
+}
+
+function transferReviewRows(option: ClientReviewOption): ReviewDetailRow[] {
+  if (!option.transfer) return [{ label: "Transfer", value: option.transferSummary || "Transfer pending" }];
+  return [
+    { label: "Pickup", value: option.transfer.pickupTime ? `${option.transfer.pickupAirportCode} on ${formatReviewDateTimeText(option.transfer.pickupTime)}` : `${option.transfer.pickupAirportCode} pickup time pending` },
+    { label: "Drop-off", value: [option.transfer.dropoffLabel, option.transfer.dropoffAddress].filter(Boolean).join(" · ") || "Drop-off pending" },
+    { label: "Luggage", value: option.transfer.baggage || "Baggage allowance pending" },
+    { label: "Airport transfer fare", value: formatMoney(option.transfer.totalAmount, option.transfer.currency) },
+  ];
+}
+
+function parseFlightTiming(outbound: string, fallbackAirline = "") {
+  const timestamps = outbound.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?/g) || [];
+  const parts = outbound.split("·").map((part) => part.trim()).filter(Boolean);
+  const airline = parts[1] && !isFlightTimingMeta(parts[1]) ? parts[1] : fallbackAirline;
+  const stops = parts.find((part, index) => index > 1 && /\bstop/i.test(part)) || "";
+  const layover = parts.find((part) => /^layover\b/i.test(part)) || "";
+  return {
+    route: parts[0] || "",
+    airline,
+    stops: normalizeStopText(stops),
+    layover,
+    departure: timestamps[0] || "",
+    arrival: timestamps[1] || "",
+  };
+}
+
+function isFlightTimingMeta(value: string) {
+  return /\bstop\b|\blayover\b|^\d{4}-\d{2}-\d{2}T|^planning estimate$/i.test(value);
+}
+
+function normalizeStopText(value: string) {
+  return value
+    .replace(/\b1 stop\(s\)/i, "1 stop")
+    .replace(/\b(\d+) stop\(s\)/i, "$1 stops");
+}
+
+function flightRouteWithAirline(timing: { route: string; airline: string }) {
+  return [timing.airline, timing.route].filter(Boolean).join(" · ");
+}
+
+function cabinLabel(value: string) {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function airlineInitials(value: string) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
+}
+
+function hotelReviewFallbackImage(hotel: NonNullable<ClientReviewOption["hotel"]>) {
+  const text = `${hotel.name} ${hotel.summary}`.toLowerCase();
+  if (text.includes("premium") || text.includes("flex")) return "/travel-media/hotel-lobby.png";
+  if (text.includes("city") || text.includes("office")) return "/travel-media/hotel-city.png";
+  return "/travel-media/hotel-business.png";
 }
 
 export function TripPlannerScreen() {
   const [requests, setRequests] = useState<CorporateTravelRequest[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [workingId, setWorkingId] = useState("");
+  const [deletingId, setDeletingId] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
 
   useEffect(() => {
@@ -2810,12 +3271,29 @@ export function TripPlannerScreen() {
     }
   }
 
+  async function deleteItinerary(id: string) {
+    const target = requests.find((request) => request.id === id);
+    const confirmed = typeof window === "undefined" || window.confirm(`Delete itinerary for ${target?.travellerName || id}? This cannot be undone.`);
+    if (!confirmed || deletingId) return;
+    setDeletingId(id);
+    setStatusMessage("");
+    try {
+      await deleteCorporateRequest(id);
+      setRequests((current) => current.filter((request) => request.id !== id));
+      setStatusMessage("Itinerary deleted.");
+    } catch {
+      setStatusMessage("Itinerary could not be deleted. Please try again.");
+    } finally {
+      setDeletingId("");
+    }
+  }
+
   return (
     <AppShell active="itineraries">
       <section className="page-heading">
         <div>
           <h1>Itinerary Planner</h1>
-          <p>Review generated options, budget posture, policy fit, and final itinerary readiness.</p>
+          <p>Review generated options, policy fit, and final itinerary readiness.</p>
         </div>
       </section>
       <section className="ops-card itinerary-page-card" aria-label="Itinerary queue">
@@ -2831,14 +3309,14 @@ export function TripPlannerScreen() {
             />
           </label>
         </div>
-        <div className="ticket-table-wrap">
+        <div aria-label="Scrollable itinerary table" className="ticket-table-wrap" tabIndex={0}>
           <table className="ticket-table itinerary-table">
             <thead>
               <tr>
                 <th scope="col">Traveler</th>
                 <th scope="col">Route</th>
                 <th scope="col">Selected Plan</th>
-                <th scope="col">Budget</th>
+                <th scope="col">Estimated total</th>
                 <th scope="col">Status</th>
                 <th scope="col" className="ticket-actions-heading">Actions</th>
               </tr>
@@ -2871,7 +3349,7 @@ export function TripPlannerScreen() {
                         <span>{selectedPlan?.policyFit || nextActionFor(request)}</span>
                       </div>
                     </td>
-                    <td className="ticket-date-cell">{formatMoney(selectedPlan?.totalAmount || request.budgetAmount, selectedPlan?.currency || request.budgetCurrency)}</td>
+                    <td className="ticket-date-cell">{formatMoney(selectedPlan?.totalAmount || 0, selectedPlan?.currency || request.budgetCurrency)}</td>
                     <td><StatusPill value={request.status} /></td>
                     <td className="ticket-action-cell">
                       <div className="itinerary-action-stack">
@@ -2884,6 +3362,15 @@ export function TripPlannerScreen() {
                           {workingId === request.id ? "Generating..." : "Generate Plan"}
                         </button>
                         <Link className="ticket-action-link" href={`/itineraries/${request.id}`}>Open Builder</Link>
+                        <button
+                          aria-label={`Delete itinerary for ${request.travellerName || request.id}`}
+                          className="ticket-action-button delete"
+                          type="button"
+                          onClick={() => void deleteItinerary(request.id)}
+                          disabled={deletingId === request.id}
+                        >
+                          <Trash2 size={14} /> {deletingId === request.id ? "Deleting..." : "Delete"}
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -2932,8 +3419,8 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
     {
       icon: MessageSquare,
       label: "Client request received",
-      meta: request.travellerEmail || "Client email",
-      body: `${request.origin || "Origin pending"} to ${request.destination || "Destination pending"} · ${request.departDate || "TBD"} to ${request.returnDate || "TBD"} · ${formatMoney(request.budgetAmount, request.budgetCurrency)}`,
+      meta: request.requesterEmail || request.travellerEmail || "Sender email",
+      body: `${request.origin || "Origin pending"} to ${request.destination || "Destination pending"} · ${request.departDate || "TBD"} to ${request.returnDate || "TBD"}`,
       detail: request.preferences ? "Traveler preferences were captured from the intake form." : request.originalRequest || "Travel form details are attached to this request."
     },
     {
@@ -2980,12 +3467,17 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
 
   async function sendApprovalEmail() {
     if (!request) return;
+    const recipientEmail = request.requesterEmail || request.travellerEmail;
+    if (!recipientEmail) {
+      setNotification("Approval email needs a sender or traveller email on the request.");
+      return;
+    }
     setSendingNotification(true);
     setNotification("Sending approval email...");
     try {
       const result = await sendCorporateRequestNotification(request.id, {
         kind: "approval_request",
-        to: [request.travellerEmail || "manager@example.com"],
+        to: [recipientEmail],
         note: "Please review this travel plan.",
         attach_itinerary: false
       });
@@ -3003,13 +3495,18 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
       setNotification("Final itinerary email requires approval and finalization.");
       return;
     }
+    const recipientEmail = request.requesterEmail || request.travellerEmail;
+    if (!recipientEmail) {
+      setNotification("Final itinerary email needs a sender or traveller email on the request.");
+      return;
+    }
     setSendingNotification(true);
     setNotification("Sending final itinerary email...");
     try {
       const result = await sendCorporateRequestNotification(request.id, {
         kind: "final_itinerary",
-        to: [request.travellerEmail || "traveler@example.com"],
-        note: "Final itinerary after agent review and approval. This is not a booking confirmation.",
+        to: [recipientEmail],
+        note: "Final itinerary after agent review and approval.",
         attach_itinerary: true
       });
       setNotification(result.safe_message);
@@ -3080,7 +3577,7 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
             <div><dt>Route</dt><dd>{request ? `${request.origin} → ${request.destination}` : "No route loaded"}</dd></div>
             <div><dt>Purpose</dt><dd>{request?.purpose || "Not captured"}</dd></div>
             <div><dt>Preferences</dt><dd>{request?.preferences || "No preferences captured"}</dd></div>
-            <div><dt>Budget</dt><dd>{request ? formatMoney(request.budgetAmount, request.budgetCurrency) : "Budget pending"}</dd></div>
+            <div><dt>Hotel tier</dt><dd>Based on submitted band</dd></div>
           </dl>
         </article>
         <article className="ops-card detail-card">
@@ -3117,9 +3614,9 @@ export function RequestWorkspaceScreen({ requestId }: { requestId: string }) {
           </label>
         </article>
         <article className="ops-card detail-card">
-          <h2>Policy & Budget</h2>
+          <h2>Policy</h2>
           {request?.aiSummary ? <p>{request.aiSummary}</p> : null}
-          <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy and budget posture."}</pre>
+          <pre>{request?.budgetPolicyCheck || "Generate a plan to calculate policy posture."}</pre>
           <button className="primary-button" type="button" onClick={() => void sendApprovalEmail()} disabled={sendingNotification}><Send size={16} /> Send Approval Email</button>
           <button className="secondary-button" type="button" onClick={() => void finalizeItinerary()} disabled={finalizingRequest || !request}><CheckCircle2 size={16} /> Finalize Itinerary</button>
           <button className="secondary-button" type="button" onClick={() => void sendFinalItineraryEmail()} disabled={sendingNotification || !request}><Send size={16} /> Send PDF to Client</button>
@@ -3145,11 +3642,7 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
   const request = requests.find((item) => item.id === requestId) || requests[0] || null;
   const plans = request?.recommendedPlans || [];
   const selectedPlan = plans.find((plan) => plan.selected) || plans[0] || null;
-  const total = selectedPlan?.totalAmount || request?.budgetAmount || 0;
-  const budget = request?.budgetAmount || 0;
-  const budgetDelta = budget - total;
-  const budgetPercent = budget > 0 ? Math.round((total / budget) * 100) : 0;
-  const budgetPosture = budgetDelta >= 0 ? "Remaining" : "Over budget";
+  const total = selectedPlan?.totalAmount || 0;
   const manualSourcingRequired = plans.some((plan) => {
     const text = `${plan.flightSummary} ${plan.hotelSummary} ${plan.policyFit}`.toLowerCase();
     return text.includes("manual sourcing") || text.includes("manual review");
@@ -3199,22 +3692,19 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
       <section className="page-heading">
         <div>
           <h1>Itinerary Builder</h1>
-          <p>Build the reviewed itinerary from provider-informed options, budget posture, policy warnings, and agent edits.</p>
+          <p>Build the reviewed itinerary from verified travel options, policy warnings, and agent edits.</p>
         </div>
       </section>
       <section className="workspace-grid">
         <article className="ops-card detail-card">
-          <span className="eyebrow">Total Estimated Budget</span>
-          <h2>Budget Rail</h2>
+          <span className="eyebrow">Estimated Total</span>
+          <h2>Selected Option</h2>
           <dl className="detail-list">
             <div><dt>Selected spend</dt><dd>{formatMoney(total, selectedPlan?.currency || request?.budgetCurrency || "USD")}</dd></div>
-            <div><dt>Approved budget</dt><dd>{formatMoney(budget, request?.budgetCurrency || selectedPlan?.currency || "USD")}</dd></div>
+            <div><dt>Hotel tier</dt><dd>Based on submitted band</dd></div>
           </dl>
           <h2>{formatMoney(total, request?.budgetCurrency || "USD")}</h2>
-          <div className="progress-track"><span style={{ width: `${Math.min(100, budgetPercent)}%` }} /></div>
-          <p>{budgetPosture} {formatMoney(Math.abs(budgetDelta), request?.budgetCurrency || selectedPlan?.currency || "USD")}</p>
-          <p>{budgetPercent}% used</p>
-          <p>{request?.budgetPolicyCheck || "Budget check pending."}</p>
+          <p>{request?.budgetPolicyCheck || "Policy check pending."}</p>
         </article>
         {selectedPlan ? (
           <article className="ops-card detail-card">
@@ -3235,7 +3725,7 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
         {manualSourcingRequired ? (
           <article className="ops-card detail-card">
             <div className="card-title-row"><h2><AlertTriangle size={18} /> Manual Sourcing Required</h2><StatusPill value="Needs Review" /></div>
-            <p>Do not finalize until an agent attaches verified provider options.</p>
+            <p>Do not finalize until an agent attaches verified travel options.</p>
           </article>
         ) : null}
         {plans.length ? plans.map((plan) => (
@@ -3247,7 +3737,7 @@ export function ItineraryBuilderScreen({ requestId }: { requestId: string }) {
             <button className="secondary-button" type="button" onClick={() => void selectPlan(plan.id)}>Select {plan.name}</button>
           </article>
         )) : (
-          <article className="ops-card detail-card"><h2>No provider options loaded</h2><p>Generate a plan from the request workspace before finalizing.</p></article>
+          <article className="ops-card detail-card"><h2>No travel options loaded</h2><p>Generate a plan from the request workspace before finalizing.</p></article>
         )}
         {statusMessage ? <p role="status">{statusMessage}</p> : null}
       </section>
@@ -3949,7 +4439,7 @@ export function AdminDashboard() {
             <h2>Import Company Data</h2>
             <FileSpreadsheet size={18} />
           </div>
-          <p className="muted-copy">Upload the manager-controlled traveler workbook with traveler profiles, preferences, visa/passport records, hotel insights, flight preferences, and past travel history. Company policy is uploaded separately as PDF.</p>
+          <p className="muted-copy">Upload the band-based traveler workbook with traveler profiles, company policy, preferences, visa/passport records, hotel insights, flight preferences, and past travel history.</p>
           <button className="secondary-button" type="button" onClick={() => void downloadTemplate()}>
             <Download size={16} /> Download Template
           </button>

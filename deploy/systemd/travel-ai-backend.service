@@ -7,6 +7,7 @@ Type=simple
 WorkingDirectory=/opt/zero-trust-travel-ai/backend
 EnvironmentFile=-/opt/datachat/.env
 EnvironmentFile=-/opt/zero-trust-travel-ai/.env.backend
+Environment=TRAVEL_AI_REVIEW_BASE_URL=https://uniprotravel.share.zrok.io
 ExecStart=/opt/zero-trust-travel-ai/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100
 Restart=always
 RestartSec=5

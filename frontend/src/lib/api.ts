@@ -73,10 +73,23 @@ async function request<T>(path: string, init?: RequestInit & { purpose?: string;
     ) {
       return request<T>(path, { ...init, retryAuth: false });
     }
-    throw new Error("Travel service request failed");
+    throw new Error(await safeResponseErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
+}
+
+async function safeResponseErrorMessage(response: Response) {
+  if (![400, 401, 403, 404, 409].includes(response.status)) return "Travel service request failed";
+  try {
+    const body = await response.clone().json() as { detail?: unknown };
+    if (typeof body.detail === "string" && body.detail.length <= 600 && !/(token|secret|password|api[_ -]?key)/i.test(body.detail)) {
+      return body.detail;
+    }
+  } catch {
+    return "Travel service request failed";
+  }
+  return "Travel service request failed";
 }
 
 async function requestVoid(path: string, init?: RequestInit & { purpose?: string; retryAuth?: boolean }): Promise<void> {
@@ -216,7 +229,7 @@ export function saveTrip(payload: TravelRequest) {
 
 export function getAdminSummary() {
   return request<AdminSummary>("/api/admin/summary", {
-    purpose: "review aggregate travel budget and policy posture"
+    purpose: "review aggregate travel policy posture"
   });
 }
 
@@ -281,7 +294,7 @@ export function getClientReview(token: string) {
   }).then(mapClientReviewResponse);
 }
 
-export function submitClientReview(token: string, payload: { action: "approve" | "request_edits"; selected_option_index?: number; edit_request_text?: string }) {
+export function submitClientReview(token: string, payload: { action: "approve" | "request_edits" | "cancel"; selected_option_index?: number; edit_request_text?: string }) {
   return request<unknown>(`/api/corporate/reviews/${encodeURIComponent(token)}`, {
     method: "POST",
     purpose: "submit signed client itinerary review",
@@ -294,12 +307,6 @@ export function updateCorporateRequest(id: string, payload: CorporateRequestUpda
   const body: Record<string, unknown> = {
     generated_plan: toBackendCorporatePlan(payload)
   };
-  if (payload.budgetAmount !== undefined || payload.budgetCurrency !== undefined) {
-    body.budgets = {
-      total_budget: payload.budgetAmount || null,
-      currency: payload.budgetCurrency || "INR"
-    };
-  }
   if (payload.travellerName !== undefined || payload.travellerEmail !== undefined || payload.travellerNationality !== undefined) {
     body.traveller_details = {
       ...(payload.travellerName !== undefined ? { traveler_name: payload.travellerName || null } : {}),
@@ -367,7 +374,7 @@ export function uploadCorporateRequests(file: File) {
   formData.append("file", file);
   return request<unknown>("/api/corporate/requests/upload-excel", {
     method: "POST",
-    purpose: "upload corporate travel requests from excel",
+    purpose: "upload corporate travel requests from form",
     body: formData
   }).then(mapCorporateUploadResponse);
 }
@@ -412,6 +419,12 @@ export function downloadCorporateExcelTemplate() {
 
 export function downloadClientRequestFormPdf() {
   return requestBlob("/api/corporate/request-form.pdf", {
+    purpose: "download client travel request form"
+  });
+}
+
+export function downloadClientRequestFormDocx() {
+  return requestBlob("/api/corporate/request-form.docx", {
     purpose: "download client travel request form"
   });
 }
@@ -496,7 +509,7 @@ export function requestPolicyRevisionChanges(policyId: string, revisionId: strin
 }
 
 export function sendCorporateRequestNotification(id: string, payload: {
-  kind: "approval_request" | "review_link" | "document_update" | "final_itinerary";
+  kind: "approval_request" | "review_link" | "document_update" | "final_itinerary" | "client_cancelled";
   to: string[];
   cc?: string[];
   note?: string;
@@ -516,10 +529,9 @@ function toBackendCorporateRequest(payload: CorporateCreateRequest) {
   return {
     traveller_details: {
       traveler_name: payload.travellerName,
-      traveler_email: payload.travellerEmail
-    },
-    company_details: {
-      company_name: payload.company
+      ...(payload.travellerEmail ? { traveler_email: payload.travellerEmail } : {}),
+      employee_band: payload.employeeBand || null,
+      employee_level: payload.employeeBand || null
     },
     travel_details: {
       origin: payload.origin,
@@ -529,16 +541,10 @@ function toBackendCorporateRequest(payload: CorporateCreateRequest) {
       include_outbound_flight: payload.includeOutboundFlight,
       include_return_flight: payload.includeReturnFlight,
       include_hotel: payload.includeHotel,
-      trip_purpose: payload.purpose,
-      travelers: 1,
-      cabin: "economy"
+      travelers: 1
     },
     preferences: {
       hotel_preference: payload.preferences
-    },
-    budgets: {
-      total_budget: Number(payload.budgetAmount) || null,
-      currency: payload.budgetCurrency || "INR"
     },
     special_requests: splitLines(payload.specialRequests),
     status: "New Entries"
@@ -573,11 +579,13 @@ function mapCorporateRequest(raw: unknown): CorporateTravelRequest {
   const destination = String(travel.destination || travel.destination_country || "Destination pending");
   const status = frontendStatusFromBackend(item.status);
   const missing = Array.isArray(plan?.missing_information) ? plan.missing_information : [];
+  const agentNotes = Array.isArray(plan?.agent_notes) ? plan.agent_notes.map(String).filter(Boolean) : [];
 
   return {
     id: String(item.id || ""),
     travellerName: String(traveller.traveler_name || "Traveller pending"),
     travellerEmail: String(traveller.traveler_email || ""),
+    requesterEmail: String(item.requester_email || ""),
     travellerNationality: String(traveller.nationality || ""),
     company: String(company.company_name || "Company pending"),
     origin: String(travel.origin || "Origin pending"),
@@ -601,6 +609,7 @@ function mapCorporateRequest(raw: unknown): CorporateTravelRequest {
     lastUpdated: String(item.updated_at || item.created_at || new Date().toISOString()),
     originalRequest: originalRequestText(item),
     aiSummary: String(plan?.request_summary || "Generate the complete travel plan to summarize this request."),
+    agentNotes,
     readinessCheck: readinessText(readiness),
     budgetPolicyCheck: budgetPolicyText(budgetPolicy),
     recommendedPlans: Array.isArray(plan?.travel_options)
@@ -724,7 +733,7 @@ function mapCorporateClientReview(raw: unknown) {
 function mapCorporateClientReviewEvent(raw: Record<string, any>): CorporateClientReviewEvent {
   return {
     id: String(raw.id || ""),
-    action: raw.action === "approved" || raw.action === "edits_requested" || raw.action === "agent_review_required" ? raw.action : "sent",
+    action: raw.action === "approved" || raw.action === "cancelled" || raw.action === "edits_requested" || raw.action === "agent_review_required" ? raw.action : "sent",
     revisionRound: Number(raw.revision_round || 0),
     selectedOptionIndex: raw.selected_option_index === null || raw.selected_option_index === undefined ? null : Number(raw.selected_option_index),
     editRequestText: raw.edit_request_text ? String(raw.edit_request_text) : null,
@@ -735,7 +744,7 @@ function mapCorporateClientReviewEvent(raw: Record<string, any>): CorporateClien
 
 function clientReviewStatus(value: unknown) {
   const status = String(value || "Not Sent");
-  if (["Sent", "Changes Requested", "Approved", "Agent Review Required", "Expired"].includes(status)) return status as any;
+  if (["Sent", "Changes Requested", "Approved", "Cancelled", "Agent Review Required", "Expired"].includes(status)) return status as any;
   return "Not Sent";
 }
 
@@ -762,19 +771,25 @@ function mapClientReviewResponse(raw: unknown): ClientReviewResponse {
       transferSummary: String(option.transfer_summary || ""),
       estimatedCost: Number(option.estimated_cost || 0),
       currency: String(option.currency || "USD"),
+      maximumBudget: option.maximum_budget === null || option.maximum_budget === undefined ? null : Number(option.maximum_budget || 0),
+      budgetDelta: option.budget_delta === null || option.budget_delta === undefined ? null : Number(option.budget_delta || 0),
       policyStatus: String(option.policy_status || ""),
       recommendationReason: String(option.recommendation_reason || ""),
+      reasoningSourceLabel: String(option.reasoning_source_label || "Reason from the submitted request"),
       pros: Array.isArray(option.pros) ? option.pros.map(String) : [],
       cons: Array.isArray(option.cons) ? option.cons.map(String) : [],
       flight: option.flight ? {
         id: String(option.flight.id || ""),
         airline: String(option.flight.airline || ""),
+        airlineCode: option.flight.airline_code ? String(option.flight.airline_code) : null,
+        airlineLogoUrl: option.flight.airline_logo_url ? String(option.flight.airline_logo_url) : null,
         summary: String(option.flight.summary || ""),
         outbound: String(option.flight.outbound || ""),
         returnLeg: option.flight.return_leg ? String(option.flight.return_leg) : null,
         cabin: String(option.flight.cabin || "economy") as any,
         totalAmount: Number(option.flight.total_amount || 0),
         currency: String(option.flight.currency || "USD"),
+        source: option.flight.source === "duffel" ? "duffel" : "synthetic",
         notes: Array.isArray(option.flight.notes) ? option.flight.notes.map(String) : []
       } : null,
       hotel: option.hotel ? {
@@ -790,7 +805,8 @@ function mapClientReviewResponse(raw: unknown): ClientReviewResponse {
         cancellationNotes: option.hotel.cancellation_notes ? String(option.hotel.cancellation_notes) : null,
         unsentSpecialRequests: Array.isArray(option.hotel.unsent_special_requests) ? option.hotel.unsent_special_requests.map(String) : [],
         totalAmount: Number(option.hotel.total_amount || 0),
-        currency: String(option.hotel.currency || "USD")
+        currency: String(option.hotel.currency || "USD"),
+        imageUrl: option.hotel.image_url ? String(option.hotel.image_url) : null
       } : null,
       transfer: option.transfer ? {
         id: String(option.transfer.id || ""),
@@ -876,7 +892,6 @@ function mapCorporateAdminSummary(raw: unknown): CorporateAdminSummary {
 function toBackendCorporatePlan(update: CorporateRequestUpdate) {
   const options = update.recommendedPlans || [];
   const total = options[0]?.totalAmount || 0;
-  const budgetStatus = update.budgetStatus || "pending";
   const approvalRequired = update.approvalStatus === "Required" || update.approvalStatus === "Rejected";
   const readiness = compactReadinessForBackend(update.readinessCheck || "");
 
@@ -890,12 +905,12 @@ function toBackendCorporatePlan(update: CorporateRequestUpdate) {
       document_notes: readiness.document_notes
     },
     budget_policy_check: {
-      budget_status: backendBudgetStatus(budgetStatus),
+      budget_status: "Not Applied",
       policy_status: approvalRequired ? "Needs Approval" : "Compliant",
       approval_required: approvalRequired,
       approval_reason: update.budgetPolicyCheck || (approvalRequired ? "Agent review required." : "No approval required."),
       estimated_cost: total,
-      total_budget: update.budgetAmount || null
+      total_budget: null
     },
     travel_options: [0, 1, 2].map((index) => {
       const option = (options[index] || options[0] || {}) as Partial<NonNullable<CorporateRequestUpdate["recommendedPlans"]>[number]>;
@@ -994,6 +1009,7 @@ function frontendStatusFromBackend(status: unknown): CorporateTravelRequest["sta
   if (normalized === "pending details" || normalized === "missing info") return "missing_info";
   if (normalized === "processing") return "processing";
   if (normalized === "waiting for approval") return "pending_approval";
+  if (normalized === "cancelled") return "cancelled";
   if (normalized === "completed" || normalized === "finalized") return "finalized";
   if (normalized === "ready for planning" || normalized === "plan generated") return "planning";
   return "new";
@@ -1004,6 +1020,7 @@ function backendStatusFromFrontend(status: CorporateRequestUpdate["status"]): st
   if (status === "processing") return "Processing";
   if (status === "pending_approval") return "Waiting for Approval";
   if (status === "finalized") return "Finalized";
+  if (status === "cancelled") return "Cancelled";
   if (status === "planning") return "Plan Generated";
   return "Plan Generated";
 }
@@ -1016,34 +1033,26 @@ function checkFromText(value: unknown): CorporateTravelRequest["visaStatus"] {
   return "pending";
 }
 
-function backendBudgetStatus(status: CorporateRequestUpdate["budgetStatus"]) {
-  if (status === "clear") return "Within Budget";
-  if (status === "blocked") return "Out of Budget";
-  if (status === "attention") return "Needs Approval";
-  return "Needs Review";
-}
-
 function backendOptionName(name: unknown, index: number) {
   const normalized = String(name || "").toLowerCase();
   if (normalized.includes("fast")) return "Fastest route";
   if (normalized.includes("comfort")) return "Comfort-focused option";
-  if (normalized.includes("budget") || normalized.includes("policy") || normalized.includes("lowest")) return "Best within budget";
-  return index === 1 ? "Fastest route" : index === 2 ? "Comfort-focused option" : "Best within budget";
+  if (normalized.includes("tier") || normalized.includes("policy") || normalized.includes("lowest")) return "Best tier fit";
+  return index === 1 ? "Fastest route" : index === 2 ? "Comfort-focused option" : "Best tier fit";
 }
 
 function originalRequestText(item: Record<string, any>) {
   const traveller = item.traveller_details || {};
   const company = item.company_details || {};
   const travel = item.travel_details || {};
-  const budget = item.budgets || {};
   return [
     `Traveller: ${traveller.traveler_name || "Missing"} (${traveller.traveler_email || "email missing"})`,
     `Nationality: ${traveller.nationality || "Missing"}`,
+    `Band: ${traveller.employee_band || traveller.employee_level || "Missing"}`,
     `Company: ${company.company_name || "Missing"}`,
     `Route: ${travel.origin || "Missing"} to ${travel.destination || travel.destination_country || "Missing"}`,
     `Dates: ${travel.depart_date || "Missing"} to ${travel.return_date || "Missing"}`,
-    `Purpose: ${travel.trip_purpose || "Missing"}`,
-    `Budget: ${budget.total_budget || "Missing"} ${budget.currency || ""}`
+    `Purpose: ${travel.trip_purpose || "Missing"}`
   ].join("\n");
 }
 
@@ -1058,7 +1067,6 @@ function readinessText(readiness: Record<string, any>) {
 
 function budgetPolicyText(check: Record<string, any>) {
   return [
-    `Budget: ${check.budget_status || "Needs Review"}`,
     `Policy: ${check.policy_status || "Needs Review"}`,
     `Estimated cost: ${check.estimated_cost || "Not calculated"}`,
     `Approval: ${check.approval_required ? "Required" : "Not required"}`,
@@ -1141,6 +1149,7 @@ function emptyCorporateRequest(): CorporateTravelRequest {
     id: "",
     travellerName: "Imported traveller",
     travellerEmail: "",
+    requesterEmail: "",
     travellerNationality: "",
     company: "",
     origin: "",
@@ -1164,6 +1173,7 @@ function emptyCorporateRequest(): CorporateTravelRequest {
     lastUpdated: "",
     originalRequest: "",
     aiSummary: "",
+    agentNotes: [],
     readinessCheck: "",
     budgetPolicyCheck: "",
     recommendedPlans: [],

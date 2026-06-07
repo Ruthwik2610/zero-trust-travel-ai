@@ -34,6 +34,8 @@ rsync -az --delete --stats \
   --exclude '*.pyc' \
   --exclude '*.tsbuildinfo' \
   --exclude 'test-results/' \
+  --exclude 'test_forms/' \
+  --exclude 'test_forms' \
   --exclude 'playwright-report/' \
   --exclude '*.db' \
   --exclude '*.sqlite' \

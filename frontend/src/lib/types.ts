@@ -152,7 +152,7 @@ export type CurrencyConversionResponse = {
 };
 
 export type CorporateRole = "admin" | "agent";
-export type CorporateRequestStatus = "new" | "planning" | "processing" | "pending_approval" | "missing_info" | "finalized";
+export type CorporateRequestStatus = "new" | "planning" | "processing" | "pending_approval" | "missing_info" | "finalized" | "cancelled";
 export type CorporateCheckStatus = "clear" | "attention" | "blocked" | "pending";
 export type CorporateApprovalStatus = "Not Required" | "Required" | "Received" | "Rejected";
 
@@ -232,11 +232,11 @@ export type CorporateGroundTransferOffer = {
   selected?: boolean;
 };
 
-export type ClientReviewStatus = "Not Sent" | "Sent" | "Changes Requested" | "Approved" | "Agent Review Required" | "Expired";
+export type ClientReviewStatus = "Not Sent" | "Sent" | "Changes Requested" | "Approved" | "Cancelled" | "Agent Review Required" | "Expired";
 
 export type CorporateClientReviewEvent = {
   id: string;
-  action: "sent" | "approved" | "edits_requested" | "agent_review_required";
+  action: "sent" | "approved" | "cancelled" | "edits_requested" | "agent_review_required";
   revisionRound: number;
   selectedOptionIndex?: number | null;
   editRequestText?: string | null;
@@ -260,6 +260,7 @@ export type CorporateTravelRequest = {
   id: string;
   travellerName: string;
   travellerEmail: string;
+  requesterEmail: string;
   travellerNationality: string;
   company: string;
   origin: string;
@@ -283,6 +284,7 @@ export type CorporateTravelRequest = {
   lastUpdated: string;
   originalRequest: string;
   aiSummary: string;
+  agentNotes: string[];
   readinessCheck: string;
   budgetPolicyCheck: string;
   recommendedPlans: CorporatePlanOption[];
@@ -308,19 +310,25 @@ export type ClientReviewOption = {
   transferSummary: string;
   estimatedCost: number;
   currency: string;
+  maximumBudget?: number | null;
+  budgetDelta?: number | null;
   policyStatus: string;
   recommendationReason: string;
+  reasoningSourceLabel: string;
   pros: string[];
   cons: string[];
   flight?: {
     id: string;
     airline: string;
+    airlineCode?: string | null;
+    airlineLogoUrl?: string | null;
     summary: string;
     outbound: string;
     returnLeg?: string | null;
     cabin: Cabin;
     totalAmount: number;
     currency: string;
+    source: "duffel" | "synthetic";
     notes: string[];
   } | null;
   hotel?: {
@@ -337,6 +345,7 @@ export type ClientReviewOption = {
     unsentSpecialRequests: string[];
     totalAmount: number;
     currency: string;
+    imageUrl?: string | null;
   } | null;
   transfer?: {
     id: string;
@@ -374,8 +383,8 @@ export type ClientReviewResponse = {
 
 export type CorporateCreateRequest = {
   travellerName: string;
-  travellerEmail: string;
-  company: string;
+  travellerEmail?: string;
+  employeeBand: string;
   origin: string;
   destination: string;
   departDate: string;
@@ -383,10 +392,7 @@ export type CorporateCreateRequest = {
   includeOutboundFlight: boolean;
   includeReturnFlight: boolean;
   includeHotel: boolean;
-  purpose: string;
   preferences: string;
-  budgetAmount: number;
-  budgetCurrency: string;
   specialRequests: string;
 };
 
@@ -502,8 +508,8 @@ export type PolicyActivityEvent = {
 export type EmailEvent = {
   id: string;
   request_id?: string | null;
-  kind?: "approval_request" | "document_update" | "final_itinerary" | null;
-  provider: "resend";
+  kind?: "approval_request" | "review_link" | "document_update" | "final_itinerary" | "client_cancelled" | null;
+  provider: "resend" | "smtp";
   status: "sent" | "configuration_required" | "failed" | "received";
   to: string[];
   subject?: string | null;

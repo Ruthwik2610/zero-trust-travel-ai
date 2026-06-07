@@ -24,11 +24,11 @@ CorporateRequestStatus = Literal[
 ]
 CorporateApprovalStatus = Literal["Not Required", "Required", "Received", "Rejected"]
 CorporateCriticalIssueStatus = Literal["None", "Urgent", "Resolved"]
-NotificationKind = Literal["approval_request", "review_link", "document_update", "final_itinerary"]
+NotificationKind = Literal["approval_request", "review_link", "document_update", "final_itinerary", "client_cancelled"]
 EmailDeliveryStatus = Literal["sent", "configuration_required", "failed", "received"]
 PolicyRevisionStatus = Literal["Draft", "Proposed", "In Review", "Approved", "Changes Requested", "Archived"]
 TravelerStatus = Literal["Compliant", "Passport Expiring", "Missing Passport", "Document Update Required"]
-ClientReviewStatus = Literal["Not Sent", "Sent", "Changes Requested", "Approved", "Agent Review Required", "Expired"]
+ClientReviewStatus = Literal["Not Sent", "Sent", "Changes Requested", "Approved", "Cancelled", "Agent Review Required", "Expired"]
 
 
 class TravelRequest(BaseModel):
@@ -54,6 +54,7 @@ class TravellerDetails(BaseModel):
     phone: str | None = Field(default=None, max_length=40)
     employee_id: str | None = Field(default=None, max_length=80)
     employee_level: str | None = Field(default=None, max_length=80)
+    employee_band: str | None = Field(default=None, max_length=80)
     department: str | None = Field(default=None, max_length=120)
     nationality: str | None = Field(default=None, max_length=80)
     passport_number: str | None = Field(default=None, max_length=40)
@@ -69,6 +70,7 @@ class CompanyDetails(BaseModel):
     cost_center: str | None = Field(default=None, max_length=100)
     approving_manager: str | None = Field(default=None, max_length=120)
     approval_manager_email: str | None = Field(default=None, max_length=120)
+    approval_band: str | None = Field(default=None, max_length=80)
     policy_tier: str | None = Field(default=None, max_length=80)
 
 
@@ -84,6 +86,7 @@ class TravelDetails(BaseModel):
     include_outbound_flight: bool = True
     include_return_flight: bool = True
     include_hotel: bool = True
+    include_ground_transfer: bool = True
     travelers: int = Field(default=1, ge=1, le=9)
     cabin: Cabin = "economy"
 
@@ -110,6 +113,9 @@ class TravelPreferences(BaseModel):
 class TravelBudget(BaseModel):
     total_budget: int | None = Field(default=None, ge=1)
     currency: str = Field(default="USD", max_length=8)
+    daily_budget: int | None = Field(default=None, ge=1)
+    flight_budget_per_hour: int | None = Field(default=None, ge=1)
+    estimated_flight_hours: int | None = Field(default=None, ge=1, le=80)
     max_flight_budget: int | None = Field(default=None, ge=1)
     max_hotel_budget: int | None = Field(default=None, ge=1)
     policy_notes: str | None = Field(default=None, max_length=500)
@@ -123,6 +129,7 @@ class CorporateTravelRequest(BaseModel):
     status: CorporateRequestStatus = "New"
     approval_status: CorporateApprovalStatus = "Not Required"
     traveller_details: TravellerDetails = Field(default_factory=TravellerDetails)
+    requester_email: str | None = Field(default=None, max_length=120)
     company_details: CompanyDetails = Field(default_factory=CompanyDetails)
     travel_details: TravelDetails = Field(default_factory=TravelDetails)
     preferences: TravelPreferences = Field(default_factory=TravelPreferences)
@@ -145,7 +152,7 @@ class TravelReadiness(BaseModel):
 
 
 class BudgetPolicyCheck(BaseModel):
-    budget_status: Literal["Within Budget", "Needs Approval", "Out of Budget", "Needs Review"]
+    budget_status: Literal["Within Budget", "Needs Approval", "Out of Budget", "Needs Review", "Not Applied"]
     policy_status: Literal["Compliant", "Needs Approval", "Policy Violation", "Needs Review"]
     approval_required: bool
     approval_reason: str
@@ -154,7 +161,7 @@ class BudgetPolicyCheck(BaseModel):
 
 
 class TravelOption(BaseModel):
-    option_name: Literal["Best within budget", "Fastest route", "Comfort-focused option"]
+    option_name: Literal["Best tier fit", "Best within budget", "Fastest route", "Comfort-focused option"]
     flight_offer_id: str | None = None
     ground_transfer_offer_id: str | None = None
     flight_summary: str
@@ -221,7 +228,7 @@ class CorporateGroundTransferOffer(BaseModel):
     total_amount: int
     currency: str = "USD"
     cancellation_notes: str | None = None
-    source: Literal["amadeus", "synthetic"] = "synthetic"
+    source: Literal["amadeus", "uber", "synthetic"] = "synthetic"
     notes: list[str] = Field(default_factory=list)
 
 
@@ -230,7 +237,7 @@ class CorporateTravelPlan(BaseModel):
     missing_information: list[str] = Field(default_factory=list)
     travel_readiness: TravelReadiness
     budget_policy_check: BudgetPolicyCheck
-    travel_options: list[TravelOption] = Field(default_factory=list, min_length=3, max_length=3)
+    travel_options: list[TravelOption] = Field(default_factory=list, min_length=1, max_length=3)
     flight_offers: list[CorporateFlightOffer] = Field(default_factory=list)
     selected_flight_offer_id: str | None = None
     hotel_offers: list[CorporateHotelOffer] = Field(default_factory=list)
@@ -246,7 +253,7 @@ class CorporateTravelPlan(BaseModel):
 
 class CorporateClientReviewEvent(BaseModel):
     id: str = Field(default_factory=lambda: f"review_evt_{uuid4().hex[:12]}")
-    action: Literal["sent", "approved", "edits_requested", "agent_review_required"]
+    action: Literal["sent", "approved", "cancelled", "edits_requested", "agent_review_required"]
     revision_round: int = Field(default=0, ge=0)
     selected_option_index: int | None = Field(default=None, ge=1, le=3)
     edit_request_text: str | None = Field(default=None, max_length=1000)
@@ -268,7 +275,7 @@ class CorporateClientReview(BaseModel):
 
 
 class CorporateReviewSubmitRequest(BaseModel):
-    action: Literal["approve", "request_edits"]
+    action: Literal["approve", "request_edits", "cancel"]
     selected_option_index: int | None = Field(default=None, ge=1, le=3)
     edit_request_text: str | None = Field(default=None, max_length=1000)
 
@@ -276,12 +283,15 @@ class CorporateReviewSubmitRequest(BaseModel):
 class CorporateReviewFlight(BaseModel):
     id: str
     airline: str
+    airline_code: str | None = None
+    airline_logo_url: str | None = None
     summary: str
     outbound: str
     return_leg: str | None = None
     cabin: Cabin
     total_amount: int
     currency: str
+    source: Literal["duffel", "synthetic"] = "synthetic"
     notes: list[str] = Field(default_factory=list)
 
 
@@ -299,6 +309,7 @@ class CorporateReviewHotel(BaseModel):
     unsent_special_requests: list[str] = Field(default_factory=list)
     total_amount: int
     currency: str
+    image_url: str | None = None
 
 
 class CorporateReviewTransfer(BaseModel):
@@ -325,8 +336,11 @@ class CorporateReviewOption(BaseModel):
     transfer_summary: str
     estimated_cost: int
     currency: str
+    maximum_budget: int | None = None
+    budget_delta: int | None = None
     policy_status: str
     recommendation_reason: str
+    reasoning_source_label: str = "Reason from the submitted request"
     pros: list[str] = Field(default_factory=list)
     cons: list[str] = Field(default_factory=list)
     flight: CorporateReviewFlight | None = None
@@ -347,7 +361,7 @@ class CorporateReviewResponse(BaseModel):
     submitted_at: datetime | None = None
     change_summary: str | None = None
     special_request_notice: str
-    options: list[CorporateReviewOption] = Field(default_factory=list, min_length=3, max_length=3)
+    options: list[CorporateReviewOption] = Field(default_factory=list, min_length=1, max_length=3)
     history: list[CorporateClientReviewEvent] = Field(default_factory=list)
 
 
@@ -447,6 +461,8 @@ class FlightLeg(BaseModel):
     direction: Literal["outbound", "return"]
     origin: str
     destination: str
+    connection_airports: list[str] = Field(default_factory=list)
+    layover_summary: str | None = None
     departure_at: str | None = None
     arrival_at: str | None = None
     stops: int | None = None
@@ -578,7 +594,7 @@ class EmailEvent(BaseModel):
     id: str = Field(default_factory=lambda: f"email_evt_{uuid4().hex[:12]}")
     request_id: str | None = None
     kind: NotificationKind | None = None
-    provider: Literal["resend"] = "resend"
+    provider: Literal["resend", "smtp"] = "resend"
     status: EmailDeliveryStatus
     to: list[str] = Field(default_factory=list)
     subject: str | None = None

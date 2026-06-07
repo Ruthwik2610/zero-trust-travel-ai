@@ -3,23 +3,33 @@ import hashlib
 import hmac
 import asyncio
 import json
+import logging
 import os
 import re
+import zipfile
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parseaddr
 from io import BytesIO
+import time
 from typing import Any
 from uuid import uuid4
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from .agent import chat_with_travel_ai, generate_corporate_plan, plan_trip
-from .currency import convert_from_usd
+from .agent import chat_with_travel_ai, generate_corporate_plan_with_request, plan_trip
+from .budgeting import budget_with_effective_total
+from .currency import convert_final_amount, convert_planning_amount, origin_city_currency
 from .env_loader import load_travel_ai_env
+from .internal_logger import INTERNAL_LOGGER_NAME, log_internal_issue
 from .mailer import send_resend_notification
+from .request_rules import request_with_component_dependencies
 from .models import (
     AdminSummary,
     AuditEvent,
@@ -128,8 +138,159 @@ CLIENT_REVIEW_MAX_REVISIONS = 3
 CLIENT_REVIEW_TOKEN_TTL_HOURS = 72
 CLIENT_REVIEW_TOKEN_VERSION = "travel-ai-client-review-v1"
 CLIENT_REVIEW_DEFAULT_BASE_URL = "http://127.0.0.1:3100"
+CLIENT_REVIEW_HOTEL_SKIP_TERMS = ("hotel", "lodging", "accommodation")
+CLIENT_REVIEW_TRANSFER_SKIP_TERMS = ("cab", "cabs", "taxi", "airport transfer", "ground transfer", "transfer")
+CLIENT_REVIEW_EDIT_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+CLIENT_REVIEW_EDIT_MONTH_PATTERN = "|".join(sorted(CLIENT_REVIEW_EDIT_MONTHS, key=len, reverse=True))
+CLIENT_REVIEW_EDIT_DATE_TOKEN_PATTERN = (
+    rf"(?:\d{{4}}-\d{{1,2}}-\d{{1,2}}|"
+    rf"(?:{CLIENT_REVIEW_EDIT_MONTH_PATTERN})\.?\s+\d{{1,2}},?\s+\d{{4}}|"
+    rf"\d{{1,2}}\s+(?:{CLIENT_REVIEW_EDIT_MONTH_PATTERN})\.?,?\s+\d{{4}})"
+)
+CLIENT_REVIEW_PROTECTED_EDIT_TERMS = (
+    "budget",
+    "daily budget",
+    "flight budget",
+    "employee band",
+    "approval band",
+    "band",
+    "policy tier",
+    "cabin",
+    "business class",
+    "first class",
+)
+CLIENT_REVIEW_EDIT_VALUE_LOOKAHEAD = (
+    r"(?=$|[.;!?]\s|\n|\s+(?:origin|destination|destination country|country|depart(?:ure)? date|return date|"
+    r"travel dates?|meeting location|client office|office|trip purpose|purpose|preferred airline|airline|"
+    r"flight preference|hotel preference|hotel area|meal preference|seat preference|timing preference|"
+    r"traveler name|traveller name|traveler email|traveller email|phone|mobile|department|nationality|"
+    r"passport expiry|visa expiry|visa status|budget|employee band|approval band|policy tier|cabin)\s*(?:to|as|is|are|:|-))"
+)
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+ISO_DATETIME_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?")
+DISPLAY_CURRENCY_CODES = {"USD", "INR", "EUR", "GBP", "CAD", "AUD", "JPY", "ZAR"}
 PIPELINE_STREAM_MAX_FOLLOW_SECONDS = 15
 PIPELINE_STREAM_POLL_SECONDS = 1.0
+NEW_TRAVELER_PROFILE_WARNING = (
+    "No matching traveler profile was found in the uploaded roster. "
+    "Ask the traveler to register or update their profile for better results."
+)
+COUNTRY_ONLY_ROUTE_KEYS = {
+    "australia",
+    "canada",
+    "china",
+    "germany",
+    "india",
+    "japan",
+    "southafrica",
+    "uae",
+    "uk",
+    "unitedarabemirates",
+    "unitedkingdom",
+    "unitedstates",
+    "unitedstatesofamerica",
+    "usa",
+}
+COUNTRY_ROUTE_EXAMPLES = {
+    "china": "Shanghai or Beijing",
+    "india": "Hyderabad, Bengaluru, or Delhi",
+    "unitedstates": "San Jose, New York, or Chicago",
+    "unitedstatesofamerica": "San Jose, New York, or Chicago",
+    "usa": "San Jose, New York, or Chicago",
+    "unitedkingdom": "London",
+    "uk": "London",
+    "unitedarabemirates": "Dubai",
+    "uae": "Dubai",
+    "southafrica": "Johannesburg",
+    "germany": "Berlin or Munich",
+    "japan": "Tokyo",
+}
+
+
+class TravelFormValidationError(ValueError):
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        super().__init__("; ".join(errors))
+
+    @property
+    def user_message(self) -> str:
+        return "; ".join(self.errors)
+
+
+BAND_POLICY_GUESS_ROWS = {
+    "employee": {
+        "policy_tier": "employee_estimate",
+        "allowed_cabins": "economy",
+        "hotel_tier": "Employee tier: 2/3-star hotels",
+        "notes": "Estimated from submitted band because no uploaded Company Policy row matched.",
+    },
+    "manager": {
+        "policy_tier": "manager_estimate",
+        "allowed_cabins": "economy,premium_economy",
+        "hotel_tier": "Manager tier: 3/4-star hotels",
+        "notes": "Estimated from submitted band because no uploaded Company Policy row matched.",
+    },
+    "senior": {
+        "policy_tier": "senior_estimate",
+        "allowed_cabins": "economy,premium_economy,business",
+        "hotel_tier": "CEO tier: 4/5-star hotels",
+        "notes": "Estimated from submitted band because no uploaded Company Policy row matched.",
+    },
+    "executive": {
+        "policy_tier": "executive_estimate",
+        "allowed_cabins": "premium_economy,business,first",
+        "hotel_tier": "CEO tier: 4/5-star hotels",
+        "notes": "Estimated from submitted band because no uploaded Company Policy row matched.",
+    },
+}
+PIPELINE_STAGE_BY_EVENT_TYPE = {
+    "corporate.pipeline.started": "intake",
+    "corporate.pipeline.pending_details": "intake",
+    "corporate.pipeline.profile_resolved": "profile_context",
+    "corporate.pipeline.planning_started": "provider_and_ai_planning",
+    "corporate.pipeline.plan_generated": "plan_generated",
+    "corporate.pipeline.options_blocked": "option_email",
+    "corporate.pipeline.options_sent": "option_email",
+    "corporate.pipeline.review_link_sent": "review_link_email",
+    "corporate.pipeline.final_blocked": "final_itinerary",
+    "corporate.pipeline.final_sent": "final_itinerary",
+}
+
+
+@dataclass(frozen=True)
+class PlanningReferenceContext:
+    policy_rows: list[dict[str, object]]
+    history_rows: list[dict[str, object]]
+    visa_rows: list[dict[str, object]]
+    traveler_matches: list[dict[str, object]]
+    enriched_request: CorporateTravelRequest
+    profile_warning: str | None
+    band_policy_note: str | None
 
 
 def require_auth(authorization: str | None = Header(default=None)) -> AuthContext:
@@ -166,6 +327,21 @@ def audit_security_decision(
     )
 
 
+def _save_pipeline_stage(
+    store: TravelStore,
+    request: CorporateTravelRequest,
+    context: AuthContext,
+    purpose: str,
+    event_type: str,
+    message: str,
+    *,
+    decision: str = "allow",
+) -> CorporateTravelRequest:
+    saved = store.save_corporate_request(request)
+    audit_security_decision(store, context, event_type, message, purpose, decision, saved.id)
+    return saved
+
+
 def protected_purpose(purpose: str | None, store: TravelStore, context: AuthContext, event_type: str) -> str:
     try:
         return require_purpose(purpose)
@@ -180,8 +356,8 @@ def _intake_required_missing(request: CorporateTravelRequest) -> list[str]:
     travel = request.travel_details
     if not traveller.traveler_name:
         missing.append("traveller_details.traveler_name")
-    if not traveller.traveler_email:
-        missing.append("traveller_details.traveler_email")
+    if not _delivery_email_for_request(request):
+        missing.append("requester_email")
     if not travel.origin:
         missing.append("travel_details.origin")
     if not travel.destination:
@@ -204,16 +380,16 @@ def _pending_details_plan(request: CorporateTravelRequest, missing: list[str]) -
             document_notes=["Only itinerary-critical missing fields block the automated pipeline."],
         ),
         budget_policy_check=BudgetPolicyCheck(
-            budget_status="Needs Review",
+            budget_status="Not Applied",
             policy_status="Needs Review",
             approval_required=False,
             approval_reason="Waiting for itinerary-critical details.",
-            total_budget=request.budgets.total_budget,
+            total_budget=None,
             estimated_cost=1,
         ),
         travel_options=[
             TravelOption(
-                option_name="Best within budget",
+                option_name="Best tier fit",
                 flight_summary="Pending itinerary-critical details.",
                 hotel_summary="Pending itinerary-critical details.",
                 estimated_cost=1,
@@ -252,14 +428,68 @@ def _request_summary_for_pending_details(request: CorporateTravelRequest) -> str
     return f"{traveller} request from {origin} to {destination} is waiting for itinerary-critical details."
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int(round((time.perf_counter() - started_at) * 1000)))
+
+
+def _request_with_effective_budget(request: CorporateTravelRequest) -> CorporateTravelRequest:
+    budget = budget_with_effective_total(request.budgets, request.travel_details)
+    if budget == request.budgets:
+        return request
+    return request.model_copy(update={"budgets": budget})
+
+
+def _planning_reference_context(store: TravelStore, request: CorporateTravelRequest) -> PlanningReferenceContext:
+    policy_rows = store.list_reference_rows("company_policy")
+    history_rows = store.list_reference_rows("traveller_history")
+    visa_rows = store.list_reference_rows("visa_rules")
+    traveler_matches = _matching_traveler_rows(request, history_rows)
+    profile_warning = _traveler_profile_warning(history_rows, traveler_matches)
+    profile_enriched = _enrich_request_from_reference_data(request, history_rows, visa_rows, traveler_matches)
+    policy_enriched, matched_policy_rows, band_policy_note = _request_with_band_policy(profile_enriched, policy_rows)
+    enriched = _request_with_effective_budget(policy_enriched)
+    return PlanningReferenceContext(
+        policy_rows=matched_policy_rows or policy_rows,
+        history_rows=history_rows,
+        visa_rows=visa_rows,
+        traveler_matches=traveler_matches,
+        enriched_request=enriched,
+        profile_warning=profile_warning,
+        band_policy_note=band_policy_note,
+    )
+
+
+def _log_corporate_pipeline_timing(
+    request: CorporateTravelRequest,
+    stage_times: dict[str, int],
+    total_ms: int,
+    *,
+    pending_details: bool,
+) -> None:
+    log_internal_issue(
+        logging.getLogger(INTERNAL_LOGGER_NAME),
+        "corporate.pipeline.timing",
+        "Corporate travel pipeline timing.",
+        level=logging.WARNING,
+        request_id=request.id,
+        total_ms=total_ms,
+        pending_details=pending_details,
+        **stage_times,
+    )
+
+
 def _run_automated_pipeline(
     store: TravelStore,
     request: CorporateTravelRequest,
     context: AuthContext,
     purpose: str,
 ) -> CorporateTravelRequest:
+    total_started_at = time.perf_counter()
+    stage_times: dict[str, int] = {}
     audit_security_decision(store, context, "corporate.pipeline.started", "Automated travel pipeline started.", purpose, "allow", request.id)
+    stage_started_at = time.perf_counter()
     missing = _intake_required_missing(request)
+    stage_times["intake_ms"] = _elapsed_ms(stage_started_at)
     if missing:
         updated = request.model_copy(update={
             "status": "Pending Details",
@@ -268,34 +498,86 @@ def _run_automated_pipeline(
         })
         saved = store.save_corporate_request(updated)
         audit_security_decision(store, context, "corporate.pipeline.pending_details", f"Missing required details: {', '.join(missing)}.", purpose, "allow", saved.id)
+        _log_corporate_pipeline_timing(
+            saved,
+            stage_times,
+            _elapsed_ms(total_started_at),
+            pending_details=True,
+        )
         return saved
 
-    policy_rows = store.list_reference_rows("company_policy")
-    history_rows = store.list_reference_rows("traveller_history")
-    visa_rows = store.list_reference_rows("visa_rules")
-    enriched = _enrich_request_from_reference_data(request, history_rows, visa_rows)
-    plan = _customer_safe_plan(generate_corporate_plan(
-        enriched,
-        policy_rows=policy_rows,
-        traveller_history_rows=history_rows,
-        visa_rule_rows=visa_rows,
-    ))
+    stage_started_at = time.perf_counter()
+    planning = _planning_reference_context(store, request)
+    stage_times["reference_context_ms"] = _elapsed_ms(stage_started_at)
+    profile_stage_message = (
+        "Uploaded traveler profile matched and request context was enriched."
+        if planning.traveler_matches
+        else "No uploaded traveler profile matched; planning will continue with submitted form details."
+    )
+    staged_request = _save_pipeline_stage(
+        store,
+        planning.enriched_request.model_copy(update={"status": "Processing", "updated_at": datetime.now(timezone.utc)}),
+        context,
+        purpose,
+        "corporate.pipeline.profile_resolved",
+        profile_stage_message,
+    )
+    planning = PlanningReferenceContext(
+        policy_rows=planning.policy_rows,
+        history_rows=planning.history_rows,
+        visa_rows=planning.visa_rows,
+        traveler_matches=planning.traveler_matches,
+        enriched_request=staged_request,
+        profile_warning=planning.profile_warning,
+        band_policy_note=planning.band_policy_note,
+    )
+
+    stage_started_at = time.perf_counter()
+    audit_security_decision(store, context, "corporate.pipeline.planning_started", "Provider search and itinerary planning started.", purpose, "allow", staged_request.id)
+    planned_request, raw_plan = generate_corporate_plan_with_request(
+        planning.enriched_request,
+        policy_rows=planning.policy_rows,
+        traveller_history_rows=planning.history_rows,
+        visa_rule_rows=planning.visa_rows,
+    )
+    plan = _customer_safe_plan(raw_plan)
+    stage_times["plan_ms"] = _elapsed_ms(stage_started_at)
+    plan = _plan_with_profile_warning(plan, planning.profile_warning)
+    plan = _plan_with_agent_note(plan, planning.band_policy_note)
     plan = plan.model_copy(update={"missing_information": [], "approval_status": "Processing"})
     approval_status = "Required"
-    processing = enriched.model_copy(update={
+    processing = planned_request.model_copy(update={
         "generated_plan": plan,
         "status": "Processing",
         "approval_status": approval_status,
         "updated_at": datetime.now(timezone.utc),
     })
-    saved = store.save_corporate_request(processing)
-    audit_security_decision(store, context, "corporate.pipeline.plan_generated", "Itinerary planning agent generated three client options.", purpose, "allow", saved.id)
+    saved = _save_pipeline_stage(
+        store,
+        processing,
+        context,
+        purpose,
+        "corporate.pipeline.plan_generated",
+        "Itinerary planning agent generated three client options.",
+    )
+    stage_started_at = time.perf_counter()
     saved = _send_option_package_agent(store, saved, context, purpose)
+    stage_times["option_email_ms"] = _elapsed_ms(stage_started_at)
+    _log_corporate_pipeline_timing(
+        saved,
+        stage_times,
+        _elapsed_ms(total_started_at),
+        pending_details=False,
+    )
     return saved
 
 
+def _delivery_email_for_request(request: CorporateTravelRequest) -> str | None:
+    return request.requester_email or request.traveller_details.traveler_email
+
+
 def _send_option_package_agent(store: TravelStore, request: CorporateTravelRequest, context: AuthContext, purpose: str) -> CorporateTravelRequest:
-    to_email = request.traveller_details.traveler_email
+    to_email = _delivery_email_for_request(request)
     if not to_email:
         audit_security_decision(store, context, "corporate.pipeline.options_blocked", "Client email is missing; option PDFs were not sent.", purpose, "deny", request.id)
         return request
@@ -319,7 +601,7 @@ def _send_option_package_agent(store: TravelStore, request: CorporateTravelReque
 
 
 def _send_final_itinerary_agent(store: TravelStore, request: CorporateTravelRequest, context: AuthContext, purpose: str) -> EmailEvent | None:
-    to_email = request.traveller_details.traveler_email
+    to_email = _delivery_email_for_request(request)
     if not to_email:
         audit_security_decision(store, context, "corporate.pipeline.final_blocked", "Client email is missing; final itinerary was not sent.", purpose, "deny", request.id)
         return None
@@ -342,8 +624,10 @@ def _send_final_itinerary_agent(store: TravelStore, request: CorporateTravelRequ
 
 
 def _prepare_client_review_link(request: CorporateTravelRequest, change_summary: str | None) -> CorporateTravelRequest:
-    if not request.generated_plan or len(request.generated_plan.travel_options) != CLIENT_REVIEW_OPTION_COUNT:
+    if not request.generated_plan or not request.generated_plan.travel_options:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client review options are not ready")
+    if request.status == "Cancelled" or (request.client_review and request.client_review.status == "Cancelled"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cancelled itinerary cannot be sent for review")
     now = datetime.now(timezone.utc)
     revision_round = request.client_review.revision_round if request.client_review else 0
     token_id = uuid4().hex
@@ -531,7 +815,7 @@ def convert_currency(
     except SecurityError as exc:
         audit_security_decision(store, context, "tools.currency.denied", str(exc), purpose, "deny")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
-    converted = convert_from_usd(request.amount_usd, request.to_currency)
+    converted = convert_final_amount(request.amount_usd, "USD", request.to_currency)
     audit_security_decision(store, context, "tools.currency.converted", "Currency conversion completed for travel estimate.", purpose, "allow")
     return converted
 
@@ -646,12 +930,18 @@ def create_corporate_request(
         audit_security_decision(store, context, "corporate.request.create.denied", str(exc), purpose, "deny")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
     now = datetime.now(timezone.utc)
-    saved = request.model_copy(
+    try:
+        _validate_corporate_request_route(request)
+    except TravelFormValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.user_message) from exc
+    normalized_request = request_with_component_dependencies(_request_with_effective_budget(request))
+    saved = normalized_request.model_copy(
         update={
             "id": f"corp_req_{uuid4().hex[:12]}",
             "owner_id": context.user_id,
             "owner_department": context.department,
-            "created_at": request.created_at or now,
+            "requester_email": normalized_request.requester_email or normalized_request.traveller_details.traveler_email or context.email,
+            "created_at": normalized_request.created_at or now,
             "updated_at": now,
         }
     )
@@ -688,7 +978,8 @@ def update_corporate_request(
         audit_security_decision(store, context, "corporate.request.update.denied", str(exc), purpose, "deny", request_id)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
     existing = _load_authorized_corporate_request(store, context, request_id, purpose)
-    updated = request_update.model_copy(
+    normalized_update = request_with_component_dependencies(_request_with_effective_budget(request_update))
+    updated = normalized_update.model_copy(
         update={
             "id": existing.id,
             "owner_id": existing.owner_id,
@@ -734,18 +1025,20 @@ def generate_corporate_request_plan(
         audit_security_decision(store, context, "corporate.plan.denied", str(exc), purpose, "deny", request_id)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
     request = _load_authorized_corporate_request(store, context, request_id, purpose)
-    policy_rows = store.list_reference_rows("company_policy")
-    history_rows = store.list_reference_rows("traveller_history")
-    visa_rows = store.list_reference_rows("visa_rules")
-    request = _enrich_request_from_reference_data(request, history_rows, visa_rows)
-    plan = generate_corporate_plan(
-        request,
-        policy_rows=policy_rows,
-        traveller_history_rows=history_rows,
-        visa_rule_rows=visa_rows,
+    try:
+        _validate_corporate_request_route(request)
+    except TravelFormValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.user_message) from exc
+    planning = _planning_reference_context(store, request)
+    planned_request, plan = generate_corporate_plan_with_request(
+        planning.enriched_request,
+        policy_rows=planning.policy_rows,
+        traveller_history_rows=planning.history_rows,
+        visa_rule_rows=planning.visa_rows,
     )
+    plan = _plan_with_profile_warning(plan, planning.profile_warning)
     approval_status = "Required" if plan.budget_policy_check.approval_required else "Not Required"
-    updated = request.model_copy(
+    updated = planned_request.model_copy(
         update={
             "generated_plan": _customer_safe_plan(plan),
             "status": plan.approval_status,
@@ -772,6 +1065,10 @@ def run_corporate_request_pipeline(
         audit_security_decision(store, context, "corporate.pipeline.denied", str(exc), purpose, "deny", request_id)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
     request = _load_authorized_corporate_request(store, context, request_id, purpose)
+    try:
+        _validate_corporate_request_route(request)
+    except TravelFormValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.user_message) from exc
     return _run_automated_pipeline(store, request, context, purpose)
 
 
@@ -802,6 +1099,11 @@ def update_corporate_request_plan(
     preferences = existing.preferences
     if request_update.preferences:
         preferences = preferences.model_copy(update=request_update.preferences.model_dump(exclude_unset=True))
+    route_check = existing.model_copy(update={"travel_details": travel_details})
+    try:
+        _validate_corporate_request_route(route_check)
+    except TravelFormValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.user_message) from exc
     updated = existing.model_copy(
         update={
             "generated_plan": _customer_safe_plan(request_update.generated_plan),
@@ -815,6 +1117,7 @@ def update_corporate_request_plan(
             "updated_at": datetime.now(timezone.utc),
         }
     )
+    updated = _request_with_effective_budget(updated)
     saved = store.save_corporate_request(updated)
     audit_security_decision(store, context, "corporate.plan.update.allowed", "Corporate travel plan edited.", purpose, "allow", saved.id)
     return saved
@@ -954,7 +1257,65 @@ def submit_client_review(
             purpose,
         )
         return _client_review_response(completed)
+    if submission.action == "cancel":
+        cancelled = _cancel_request_from_client_review(store, request, context, purpose)
+        return _client_review_response(cancelled)
     return _request_client_review_edits(store, request, submission, context, purpose)
+
+
+def _cancel_request_from_client_review(
+    store: TravelStore,
+    request: CorporateTravelRequest,
+    context: AuthContext,
+    purpose: str,
+) -> CorporateTravelRequest:
+    if request.status in {"Completed", "Finalized"} or (request.client_review and request.client_review.status == "Approved"):
+        audit_security_decision(store, context, "corporate.pipeline.client_cancel_blocked", "Approved itinerary cannot be cancelled from the client review link.", purpose, "deny", request.id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Approved itinerary cannot be cancelled from this link")
+    if not request.client_review:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client review is not ready")
+
+    now = datetime.now(timezone.utc)
+    review = request.client_review.model_copy(update={
+        "status": "Cancelled",
+        "submitted_at": now,
+    })
+    saved = store.save_corporate_request(request.model_copy(update={
+        "status": "Cancelled",
+        "approval_status": "Rejected",
+        "client_review": review,
+        "client_review_history": [
+            *request.client_review_history,
+            CorporateClientReviewEvent(
+                action="cancelled",
+                revision_round=review.revision_round,
+                created_at=now,
+            ),
+        ],
+        "updated_at": now,
+    }))
+    _send_client_cancelled_email(store, saved, context, purpose)
+    audit_security_decision(store, context, "corporate.pipeline.client_cancelled", "Client cancelled the itinerary review request.", purpose, "allow", saved.id)
+    return saved
+
+
+def _send_client_cancelled_email(store: TravelStore, request: CorporateTravelRequest, context: AuthContext, purpose: str) -> EmailEvent | None:
+    to_email = _delivery_email_for_request(request)
+    if not to_email:
+        audit_security_decision(store, context, "corporate.pipeline.client_cancel_email_blocked", "Client email is missing; cancellation acknowledgement was not sent.", purpose, "deny", request.id)
+        return None
+    event = send_resend_notification(
+        request.id,
+        request,
+        NotificationRequest(
+            kind="client_cancelled",
+            to=[to_email],
+            note="Your travel request has been cancelled. The travel team will not finalize this itinerary unless you contact them again.",
+        ),
+    )
+    saved = store.save_email_event(event)
+    audit_security_decision(store, context, "corporate.pipeline.client_cancel_email_sent", saved.safe_message, purpose, "allow", request.id)
+    return saved
 
 
 def _request_client_review_edits(
@@ -969,6 +1330,10 @@ def _request_client_review_edits(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Edit request text is required")
     if not request.client_review:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client review is not ready")
+    if request.status == "Cancelled" or request.client_review.status == "Cancelled":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cancelled itinerary cannot be changed from this link")
+    if request.status in {"Completed", "Finalized"} or request.client_review.status == "Approved":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Approved itinerary cannot be changed from this link")
 
     now = datetime.now(timezone.utc)
     current_round = request.client_review.revision_round
@@ -1005,18 +1370,23 @@ def _request_client_review_edits(
 
     next_round = current_round + 1
     change_summary = _client_review_change_summary(next_round, comment)
-    request_for_revision = request.model_copy(update={
-        "special_requests": [*request.special_requests, f"Client edit request round {next_round}: {comment}"],
+    special_requests = [*request.special_requests]
+    safe_edit_note = _client_safe_itinerary_edit_note(comment)
+    if safe_edit_note:
+        special_requests.append(f"Client edit request round {next_round}: {safe_edit_note}")
+    request_for_revision = _request_with_client_edit_updates(request, comment).model_copy(update={
+        "special_requests": special_requests,
     })
     policy_rows = store.list_reference_rows("company_policy")
     history_rows = store.list_reference_rows("traveller_history")
     visa_rows = store.list_reference_rows("visa_rules")
-    plan = _customer_safe_plan(generate_corporate_plan(
+    planned_request, raw_plan = generate_corporate_plan_with_request(
         request_for_revision,
         policy_rows=policy_rows,
         traveller_history_rows=history_rows,
         visa_rule_rows=visa_rows,
-    ))
+    )
+    plan = _customer_safe_plan(raw_plan)
     plan = plan.model_copy(update={"missing_information": [], "approval_status": "Processing"})
     revision_review = request.client_review.model_copy(update={
         "status": "Changes Requested",
@@ -1025,7 +1395,7 @@ def _request_client_review_edits(
         "change_summary": change_summary,
         "submitted_at": now,
     })
-    revision_request = request_for_revision.model_copy(update={
+    revision_request = planned_request.model_copy(update={
         "generated_plan": plan,
         "status": "Processing",
         "approval_status": "Required",
@@ -1040,6 +1410,364 @@ def _request_client_review_edits(
     return _client_review_response(saved)
 
 
+def _request_with_client_edit_updates(request: CorporateTravelRequest, comment: str) -> CorporateTravelRequest:
+    updated = _request_with_client_component_skips(request, comment)
+    travel_updates = _client_travel_detail_updates(updated, comment)
+    traveller_updates = _client_traveller_detail_updates(comment)
+    preference_updates = _client_preference_updates(updated, comment)
+
+    if travel_updates:
+        updated = updated.model_copy(update={"travel_details": updated.travel_details.model_copy(update=travel_updates)})
+    if traveller_updates:
+        updated = updated.model_copy(update={"traveller_details": updated.traveller_details.model_copy(update=traveller_updates)})
+    if preference_updates:
+        updated = updated.model_copy(update={"preferences": updated.preferences.model_copy(update=preference_updates)})
+    return updated
+
+
+def _request_with_client_component_skips(request: CorporateTravelRequest, comment: str) -> CorporateTravelRequest:
+    skip_hotel = _client_requested_component_skip(comment, CLIENT_REVIEW_HOTEL_SKIP_TERMS)
+    skip_transfer = _client_requested_component_skip(comment, CLIENT_REVIEW_TRANSFER_SKIP_TERMS)
+    if not (skip_hotel or skip_transfer):
+        return request_with_component_dependencies(request)
+
+    travel_updates: dict[str, object] = {}
+    preference_updates: dict[str, object] = {}
+    if skip_hotel:
+        travel_updates["include_hotel"] = False
+    if skip_transfer:
+        travel_updates["include_ground_transfer"] = False
+        preference_updates["airport_transfer_needed"] = False
+
+    updated = request
+    if travel_updates:
+        updated = updated.model_copy(update={"travel_details": updated.travel_details.model_copy(update=travel_updates)})
+    if preference_updates:
+        updated = updated.model_copy(update={"preferences": updated.preferences.model_copy(update=preference_updates)})
+    return request_with_component_dependencies(updated)
+
+
+def _client_requested_component_skip(comment: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        term_pattern = re.escape(term)
+        if re.search(rf"\b(?:do not|don't|dont)\s+(?:skip|remove|exclude)\b[^.?!\n]{{0,40}}\b{term_pattern}\b", comment, re.IGNORECASE):
+            continue
+        if re.search(rf"\b(?:skip|remove|exclude|without|no)\b[^.?!\n]{{0,40}}\b{term_pattern}\b", comment, re.IGNORECASE):
+            return True
+        if re.search(rf"\b{term_pattern}\s+(?:is\s+)?not\s+(?:needed|required)\b", comment, re.IGNORECASE):
+            return True
+    return False
+
+
+def _client_travel_detail_updates(request: CorporateTravelRequest, comment: str) -> dict[str, object]:
+    updates: dict[str, object] = {}
+    updates.update(_client_date_updates(request, comment))
+    text_fields = (
+        ("origin", ("origin", "from city", "departure city"), 120),
+        ("destination", ("destination", "to city", "arrival city"), 120),
+        ("destination_country", ("destination country", "country"), 80),
+        ("trip_purpose", ("trip purpose", "purpose"), 240),
+        ("meeting_location", ("meeting location", "client office", "office"), 240),
+    )
+    for field, labels, max_length in text_fields:
+        value = _client_edit_value(comment, labels, max_length)
+        if value:
+            updates[field] = value
+
+    if "destination_country" not in updates:
+        inferred_country = _infer_destination_country(
+            str(updates.get("destination") or request.travel_details.destination or ""),
+            str(updates.get("meeting_location") or request.travel_details.meeting_location or ""),
+            request.preferences.hotel_preference or "",
+        )
+        if inferred_country:
+            updates["destination_country"] = inferred_country
+    return updates
+
+
+def _client_traveller_detail_updates(comment: str) -> dict[str, object]:
+    updates: dict[str, object] = {}
+    text_fields = (
+        ("traveler_name", ("traveler name", "traveller name", "passenger name"), 120),
+        ("traveler_email", ("traveler email", "traveller email", "email"), 120),
+        ("phone", ("phone", "mobile", "phone number"), 40),
+        ("department", ("department",), 120),
+        ("nationality", ("nationality",), 80),
+        ("visa_status", ("visa status",), 120),
+    )
+    for field, labels, max_length in text_fields:
+        value = _client_edit_value(comment, labels, max_length)
+        if value:
+            updates[field] = value
+
+    for field, labels in (
+        ("passport_expiry", ("passport expiry", "passport expiration")),
+        ("visa_expiry", ("visa expiry", "visa expiration")),
+    ):
+        value = _client_edit_date_value(comment, labels)
+        if value:
+            updates[field] = value
+    return updates
+
+
+def _client_preference_updates(request: CorporateTravelRequest, comment: str) -> dict[str, object]:
+    text_fields = [
+        ("preferred_airline", ("preferred airline", "airline"), 120),
+        ("flight_preference", ("flight preference", "flight timing", "flight time"), 160),
+        ("meal_preference", ("meal preference", "meal"), 120),
+        ("seat_preference", ("seat preference", "seat"), 80),
+        ("timing_preference", ("timing preference", "timing"), 120),
+    ]
+    if request.travel_details.include_hotel:
+        text_fields.extend([
+            ("hotel_preference", ("hotel preference", "hotel"), 160),
+            ("preferred_hotel_area", ("hotel area", "preferred hotel area"), 160),
+        ])
+
+    updates: dict[str, object] = {}
+    for field, labels, max_length in text_fields:
+        value = _client_edit_value(comment, labels, max_length)
+        if value:
+            updates[field] = value
+    natural_flight = _client_natural_flight_preference(comment)
+    if natural_flight:
+        updates["flight_preference"] = natural_flight
+    natural_hotel = _client_natural_hotel_preference(comment) if request.travel_details.include_hotel else None
+    if natural_hotel:
+        updates["hotel_preference"] = natural_hotel
+    return updates
+
+
+def _client_natural_flight_preference(comment: str) -> str | None:
+    if re.search(r"\b(?:nonstop|non-stop|direct)\b", comment, re.IGNORECASE):
+        return "Nonstop or direct flight"
+    if re.search(r"\b(?:(?:only|just|at most|max(?:imum)?)\s+)?(?:one|1)[ -]?stop\b", comment, re.IGNORECASE):
+        return "Only one-stop flight"
+    return None
+
+
+def _client_natural_hotel_preference(comment: str) -> str | None:
+    if re.search(r"\b(?:different|another|alternate|alternative)\s+hotel\b|\bchange\s+(?:the\s+)?hotel\b", comment, re.IGNORECASE):
+        return "Different hotel requested"
+    return None
+
+
+def _client_date_updates(request: CorporateTravelRequest, comment: str) -> dict[str, object]:
+    updates: dict[str, date] = {}
+    range_match = re.search(
+        rf"\b(?:(?:please\s+)?(?:change|update|correct|set)\s+)?(?:the\s+)?(?:travel\s+)?dates?\s*(?:to|as|are|is|:|-)\s*"
+        rf"(?P<depart>{CLIENT_REVIEW_EDIT_DATE_TOKEN_PATTERN})\s+(?:to|through|until|and|-)\s+"
+        rf"(?P<return>{CLIENT_REVIEW_EDIT_DATE_TOKEN_PATTERN})",
+        comment,
+        re.IGNORECASE,
+    )
+    if range_match:
+        depart = _client_edit_date_from_text(range_match.group("depart"))
+        ret = _client_edit_date_from_text(range_match.group("return"))
+        if depart and ret and ret >= depart:
+            return {"depart_date": depart, "return_date": ret}
+
+    relative_updates = _client_relative_day_date_updates(request, comment)
+    if relative_updates:
+        return relative_updates
+
+    depart = _client_generic_depart_date(comment) or _client_specific_date(comment, (r"depart(?:ure)?", r"travel", r"start", r"leave"))
+    ret = _client_specific_date(comment, (r"return", r"end"))
+    if depart:
+        updates["depart_date"] = depart
+        if not ret and request.travel_details.depart_date and request.travel_details.return_date:
+            updates["return_date"] = depart + (request.travel_details.return_date - request.travel_details.depart_date)
+    if ret:
+        updates["return_date"] = ret
+
+    candidate_depart = updates.get("depart_date", request.travel_details.depart_date)
+    candidate_return = updates.get("return_date", request.travel_details.return_date)
+    if candidate_depart and candidate_return and candidate_return < candidate_depart:
+        return {}
+    return updates
+
+
+def _client_relative_day_date_updates(request: CorporateTravelRequest, comment: str) -> dict[str, object]:
+    if not request.travel_details.depart_date:
+        return {}
+    month = CLIENT_REVIEW_EDIT_MONTH_PATTERN
+    match = re.search(
+        rf"\b(?:change|update|correct|set)\s+(?:the\s+)?(?:travel\s+)?dates?\s+"
+        rf"(?P<depart_month>{month})\s+(?P<old_depart>\d{{1,2}})\s+to\s+"
+        rf"(?:(?P<new_depart_month>{month})\s+)?(?P<new_depart>\d{{1,2}})"
+        rf"(?:\s+(?:and|,)\s+return\s+(?:(?P<return_month>{month})\s+)?(?P<old_return>\d{{1,2}})\s+to\s+"
+        rf"(?:(?P<new_return_month>{month})\s+)?(?P<new_return>\d{{1,2}}))?",
+        comment,
+        re.IGNORECASE,
+    )
+    if not match:
+        return {}
+    depart_month = _client_edit_month_number(match.group("depart_month"))
+    old_depart_day = _client_edit_day_number(match.group("old_depart"))
+    new_depart_day = _client_edit_day_number(match.group("new_depart"))
+    if not (depart_month and old_depart_day and new_depart_day):
+        return {}
+    current_depart = request.travel_details.depart_date
+    if current_depart.month != depart_month or current_depart.day != old_depart_day:
+        return {}
+    new_depart = _client_month_day_date(
+        match.group("new_depart_month") or match.group("depart_month"),
+        new_depart_day,
+        current_depart,
+    )
+    if not new_depart:
+        return {}
+
+    updates: dict[str, object] = {"depart_date": new_depart}
+    current_return = request.travel_details.return_date
+    if match.group("old_return") and current_return:
+        return_month_text = match.group("return_month") or match.group("depart_month")
+        old_return_month = _client_edit_month_number(return_month_text)
+        old_return_day = _client_edit_day_number(match.group("old_return"))
+        new_return_day = _client_edit_day_number(match.group("new_return"))
+        if old_return_month and old_return_day and new_return_day and current_return.month == old_return_month and current_return.day == old_return_day:
+            new_return = _client_month_day_date(match.group("new_return_month") or return_month_text, new_return_day, current_return)
+            if new_return and new_return >= new_depart:
+                updates["return_date"] = new_return
+    elif current_return:
+        updates["return_date"] = new_depart + (current_return - current_depart)
+    return updates
+
+
+def _client_edit_month_number(value: str | None) -> int | None:
+    if not value:
+        return None
+    return CLIENT_REVIEW_EDIT_MONTHS.get(value.strip().lower())
+
+
+def _client_edit_day_number(value: str | None) -> int | None:
+    if not value:
+        return None
+    day = int(value)
+    return day if 1 <= day <= 31 else None
+
+
+def _client_month_day_date(month_text: str | None, day: int, reference: date) -> date | None:
+    month = _client_edit_month_number(month_text)
+    if not month:
+        return None
+    try:
+        return date(reference.year, month, day)
+    except ValueError:
+        return None
+
+
+def _client_generic_depart_date(comment: str) -> date | None:
+    match = re.search(
+        rf"\b(?:change|update|correct|set)\s+(?:the\s+)?date\s*(?:to|as|is|:|-)\s*(?P<date>{CLIENT_REVIEW_EDIT_DATE_TOKEN_PATTERN})",
+        comment,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _client_edit_date_from_text(match.group("date"))
+
+
+def _client_specific_date(comment: str, labels: tuple[str, ...]) -> date | None:
+    label_pattern = "|".join(labels)
+    match = re.search(
+        rf"\b(?:change|update|correct|set)?\s*(?:the\s+)?(?:{label_pattern})\s+date\s*(?:to|as|is|:|-)\s*(?P<date>{CLIENT_REVIEW_EDIT_DATE_TOKEN_PATTERN})",
+        comment,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _client_edit_date_from_text(match.group("date"))
+
+
+def _client_edit_date_value(comment: str, labels: tuple[str, ...]) -> date | None:
+    value = _client_edit_value(comment, labels, 40)
+    if not value:
+        return None
+    return _client_edit_date_from_text(value)
+
+
+def _client_edit_date_from_text(value: str) -> date | None:
+    text = value.strip(" \"'`.,;:")
+    iso_match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if iso_match:
+        try:
+            return date(int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3)))
+        except ValueError:
+            return None
+
+    month_first = re.fullmatch(
+        rf"({CLIENT_REVIEW_EDIT_MONTH_PATTERN})\.?\s+(\d{{1,2}}),?\s+(\d{{4}})",
+        text,
+        re.IGNORECASE,
+    )
+    if month_first:
+        return _client_date_from_parts(month_first.group(3), month_first.group(1), month_first.group(2))
+
+    day_first = re.fullmatch(
+        rf"(\d{{1,2}})\s+({CLIENT_REVIEW_EDIT_MONTH_PATTERN})\.?,?\s+(\d{{4}})",
+        text,
+        re.IGNORECASE,
+    )
+    if day_first:
+        return _client_date_from_parts(day_first.group(3), day_first.group(2), day_first.group(1))
+    return None
+
+
+def _client_date_from_parts(year_text: str, month_text: str, day_text: str) -> date | None:
+    month = _client_edit_month_number(month_text)
+    day = _client_edit_day_number(day_text)
+    if not month or not day:
+        return None
+    try:
+        return date(int(year_text), month, day)
+    except ValueError:
+        return None
+
+
+def _client_edit_value(comment: str, labels: tuple[str, ...], max_length: int) -> str | None:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    for pattern in (
+        rf"\b(?:change|update|correct|set)\s+(?:the\s+)?(?:{label_pattern})\s*(?:to|as|is|:|-)\s+(.+?){CLIENT_REVIEW_EDIT_VALUE_LOOKAHEAD}",
+        rf"\b(?:{label_pattern})\s*(?:to|as|is|are|:|-)\s+(.+?){CLIENT_REVIEW_EDIT_VALUE_LOOKAHEAD}",
+    ):
+        match = re.search(pattern, comment, re.IGNORECASE | re.DOTALL)
+        if match:
+            return _client_clean_edit_value(match.group(1), max_length)
+    return None
+
+
+def _client_clean_edit_value(value: str, max_length: int) -> str | None:
+    protected_pattern = "|".join(re.escape(term) for term in CLIENT_REVIEW_PROTECTED_EDIT_TERMS)
+    clean = re.split(rf"\s+(?:and\s+)?(?:{protected_pattern})\b", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    clean = re.sub(r"\s+", " ", clean).strip(" \"'`.,;:")
+    clean = re.sub(r"^(?:please\s+)?(?:to|as|is|are)\s+", "", clean, flags=re.IGNORECASE).strip(" \"'`.,;:")
+    if not clean:
+        return None
+    return clean[:max_length]
+
+
+def _client_safe_itinerary_edit_note(comment: str) -> str | None:
+    safe_parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|[;\n]+", mask_sensitive_customer_text(comment))
+        if part.strip() and not _client_edit_mentions_protected_fields(part)
+    ]
+    safe_note = "; ".join(safe_parts).strip()
+    if not safe_note:
+        return None
+    if len(safe_note) > 400:
+        return f"{safe_note[:397]}..."
+    return safe_note
+
+
+def _client_edit_mentions_protected_fields(text: str) -> bool:
+    for term in CLIENT_REVIEW_PROTECTED_EDIT_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE):
+            return True
+    return False
+
+
 def _send_review_link_email(
     store: TravelStore,
     request: CorporateTravelRequest,
@@ -1047,7 +1775,7 @@ def _send_review_link_email(
     context: AuthContext,
     purpose: str,
 ) -> EmailEvent | None:
-    to_email = request.traveller_details.traveler_email
+    to_email = _delivery_email_for_request(request)
     if not to_email or not request.client_review:
         audit_security_decision(store, context, "corporate.pipeline.review_link_blocked", "Client email or review link is missing.", purpose, "deny", request.id)
         return None
@@ -1069,10 +1797,11 @@ def _send_review_link_email(
 
 
 def _client_review_change_summary(revision_round: int, comment: str) -> str:
-    safe_comment = mask_sensitive_customer_text(comment).strip()
+    safe_comment = (_client_safe_itinerary_edit_note(comment) or "your itinerary corrections").rstrip(" .")
     if len(safe_comment) > 220:
         safe_comment = f"{safe_comment[:217]}..."
-    return f"Round {revision_round} options were regenerated around this request: {safe_comment}"
+    protected_note = " Protected policy fields were left unchanged." if _client_edit_mentions_protected_fields(comment) else ""
+    return f"Round {revision_round} options were regenerated around this request: {safe_comment}.{protected_note}"
 
 
 def _client_review_response(request: CorporateTravelRequest) -> CorporateReviewResponse:
@@ -1080,12 +1809,12 @@ def _client_review_response(request: CorporateTravelRequest) -> CorporateReviewR
     review = request.client_review
     if not plan or not review:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review link is not available")
-    currency = request.budgets.currency or "USD"
+    currency = _client_review_currency(request)
     options = [
         _client_review_option(request, option, index, currency)
         for index, option in enumerate(plan.travel_options[:CLIENT_REVIEW_OPTION_COUNT], start=1)
     ]
-    while len(options) < CLIENT_REVIEW_OPTION_COUNT:
+    if not options:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client review options are not ready")
     return CorporateReviewResponse(
         request_id=request.id,
@@ -1110,39 +1839,54 @@ def _client_review_option(request: CorporateTravelRequest, option: TravelOption,
     flight = next((offer for offer in plan.flight_offers if offer.id == option.flight_offer_id), None) if plan else None
     hotel = plan.hotel_offers[index - 1] if plan and index - 1 < len(plan.hotel_offers) else None
     transfer = next((offer for offer in plan.ground_transfer_offers if offer.id == option.ground_transfer_offer_id), None) if plan else None
+    plan_currency = request.budgets.currency or "USD"
     return CorporateReviewOption(
         option_index=index,
         option_name=option.option_name,
         flight_summary=option.flight_summary,
         hotel_summary=option.hotel_summary,
         transfer_summary=option.transfer_summary,
-        estimated_cost=option.estimated_cost,
+        estimated_cost=_client_review_amount(option.estimated_cost, plan_currency, currency),
         currency=currency,
+        maximum_budget=None,
+        budget_delta=None,
         policy_status=option.policy_status,
-        recommendation_reason=option.recommendation_reason,
+        recommendation_reason=_customer_safe_review_reason(request, option, flight, hotel, transfer),
+        reasoning_source_label=_review_reasoning_source_label(request),
         pros=option.pros,
         cons=option.cons,
-        flight=_client_review_flight(flight) if flight else None,
-        hotel=_client_review_hotel(hotel) if hotel else None,
-        transfer=_client_review_transfer(transfer) if transfer else None,
+        flight=_client_review_flight(flight, currency) if flight else None,
+        hotel=_client_review_hotel(request, hotel, flight, currency) if hotel else None,
+        transfer=_client_review_transfer(transfer, currency) if transfer else None,
     )
 
 
-def _client_review_flight(flight) -> CorporateReviewFlight:
+def _client_review_currency(request: CorporateTravelRequest) -> str:
+    return origin_city_currency(request.travel_details.origin, request.budgets.currency or "USD")
+
+
+def _client_review_amount(amount: int, source_currency: str | None, display_currency: str) -> int:
+    return convert_planning_amount(int(amount or 0), source_currency or "USD", display_currency)  # type: ignore[arg-type]
+
+
+def _client_review_flight(flight, display_currency: str) -> CorporateReviewFlight:
     return CorporateReviewFlight(
         id=flight.id,
         airline=flight.airline,
+        airline_code=_flight_airline_code(flight),
+        airline_logo_url=_flight_airline_logo_url(flight),
         summary=flight.summary,
         outbound=flight.outbound,
         return_leg=flight.return_leg,
         cabin=flight.cabin,
-        total_amount=flight.total_amount,
-        currency=flight.currency,
+        total_amount=_client_review_amount(flight.total_amount, flight.currency, display_currency),
+        currency=display_currency,
+        source=flight.source,
         notes=flight.notes,
     )
 
 
-def _client_review_hotel(hotel) -> CorporateReviewHotel:
+def _client_review_hotel(request: CorporateTravelRequest, hotel, flight, display_currency: str) -> CorporateReviewHotel:
     return CorporateReviewHotel(
         id=hotel.id,
         name=hotel.name,
@@ -1154,13 +1898,14 @@ def _client_review_hotel(hotel) -> CorporateReviewHotel:
         checkout_time=hotel.checkout_time,
         room_notes=hotel.room_notes,
         cancellation_notes=hotel.cancellation_notes,
-        unsent_special_requests=hotel.unsent_special_requests,
-        total_amount=hotel.total_amount,
-        currency=hotel.currency,
+        unsent_special_requests=_review_hotel_special_requests(request, hotel, flight),
+        total_amount=_client_review_amount(hotel.total_amount, hotel.currency, display_currency),
+        currency=display_currency,
+        image_url=hotel.image_url,
     )
 
 
-def _client_review_transfer(transfer: CorporateGroundTransferOffer) -> CorporateReviewTransfer:
+def _client_review_transfer(transfer: CorporateGroundTransferOffer, display_currency: str) -> CorporateReviewTransfer:
     return CorporateReviewTransfer(
         id=transfer.id,
         pickup_airport_code=transfer.pickup_airport_code,
@@ -1171,19 +1916,250 @@ def _client_review_transfer(transfer: CorporateGroundTransferOffer) -> Corporate
         vehicle_type=transfer.vehicle_type,
         passengers=transfer.passengers,
         baggage=transfer.baggage,
-        total_amount=transfer.total_amount,
-        currency=transfer.currency,
+        total_amount=_client_review_amount(transfer.total_amount, transfer.currency, display_currency),
+        currency=display_currency,
         cancellation_notes=transfer.cancellation_notes,
         notes=transfer.notes,
     )
 
 
 def _special_request_notice(request: CorporateTravelRequest) -> str:
-    if not request.special_requests:
-        return "No special requests were captured for this itinerary."
-    return "Captured special requests have not been sent to the hotel or transfer provider yet: " + "; ".join(
-        mask_sensitive_customer_text(item) for item in request.special_requests
+    items = _unique_text([
+        *request.special_requests,
+        *_generated_review_special_requests(request),
+    ])
+    if not items:
+        return "No hotel or transfer service requests were captured for this itinerary."
+    return "Special requests to include: " + "; ".join(
+        mask_sensitive_customer_text(item) for item in items
     )
+
+
+def _customer_safe_review_reason(request: CorporateTravelRequest, option: TravelOption, flight, hotel, transfer) -> str:
+    context_reasons = _review_context_reasons(request, flight, hotel, transfer)
+    if option.option_name in {"Best tier fit", "Best within budget"}:
+        option_reason = "Option tradeoff: best hotel tier fit while still covering the flight, hotel, and airport transfer."
+    elif option.option_name == "Fastest route":
+        option_reason = "Option tradeoff: prioritizes arrival reliability when timing matters more than the lowest estimate."
+    elif option.option_name == "Comfort-focused option":
+        option_reason = "Option tradeoff: adds rest, luggage, and transfer buffers for long-haul travel or high-stakes meetings."
+    else:
+        option_reason = "Option tradeoff: balances cost, schedule, hotel fit, and airport transfer coverage."
+    return "\n".join([*context_reasons, option_reason])
+
+
+def _review_context_reasons(request: CorporateTravelRequest, flight, hotel, transfer) -> list[str]:
+    reasons: list[str] = []
+    source_label = _review_reasoning_source_label(request)
+    route = _safe_route_text(request)
+    if source_label == "Reason from your previous journeys":
+        reasons.append(f"Route fit: previous journeys point to this type of {route} itinerary.")
+    else:
+        reasons.append(f"Route fit: the submitted request asks for a {route} itinerary.")
+
+    preference_parts: list[str] = []
+    preferred_airline = request.preferences.preferred_airline
+    if preferred_airline and flight:
+        if preferred_airline.casefold() in flight.airline.casefold():
+            preference_parts.append("selected airline matches the captured airline preference")
+        else:
+            preference_parts.append("flight was weighed against the captured airline preference")
+
+    hotel_context = request.preferences.preferred_hotel_area or request.preferences.hotel_preference or request.travel_details.meeting_location
+    if hotel_context and hotel:
+        preference_parts.append("hotel keeps the stay close to the requested business area")
+
+    if request.preferences.timing_preference and flight:
+        preference_parts.append("flight timing was weighed against the timing preference")
+
+    if transfer:
+        preference_parts.append("airport transfer is included through to the selected hotel")
+
+    if flight and flight.cabin != "economy" and _traveller_designation_supports_cabin(request):
+        preference_parts.append(f"travel policy allows {flight.cabin.replace('_', ' ')}")
+
+    if preference_parts:
+        reasons.append(_sentence_from_parts("Recommendation fit", preference_parts))
+    return reasons
+
+
+def _safe_route_text(request: CorporateTravelRequest) -> str:
+    origin = request.travel_details.origin or "origin"
+    destination = request.travel_details.destination or "destination"
+    return f"{origin} to {destination}"
+
+
+def _sentence_from_parts(label: str, parts: list[str]) -> str:
+    if len(parts) == 1:
+        return f"{label}: {parts[0]}."
+    return f"{label}: {', '.join(parts[:-1])}, and {parts[-1]}."
+
+
+def _traveller_designation_supports_cabin(request: CorporateTravelRequest) -> bool:
+    text = " ".join([
+        (request.traveller_details.employee_band or "").lower(),
+        (request.traveller_details.employee_level or "").lower(),
+        (request.company_details.approval_band or "").lower(),
+        (request.company_details.policy_tier or "").lower(),
+    ])
+    return any(
+        marker in text
+        for marker in (
+            "manager",
+            "director",
+            "vp",
+            "vice president",
+            "head of",
+            "ceo",
+            "chief",
+            "founder",
+            "president",
+            "chair",
+            "band m",
+        )
+    )
+
+
+def _flight_airline_code(flight) -> str | None:
+    code = _note_value(flight.notes, "Airline code:")
+    if code:
+        return code.upper()
+    provider = flight.provider or ""
+    if provider.startswith(("duffel-api/", "duffel-mcp/")):
+        suffix = provider.split("/", 1)[1].strip()
+        if suffix and suffix != "live" and len(suffix) <= 3:
+            return suffix.upper()
+    return None
+
+
+def _flight_airline_logo_url(flight) -> str | None:
+    return _note_value(flight.notes, "Airline logo:")
+
+
+def _note_value(notes: list[str], prefix: str) -> str | None:
+    for note in notes:
+        if note.startswith(prefix):
+            value = note.removeprefix(prefix).strip()
+            return value or None
+    return None
+
+
+def _review_reasoning_source_label(request: CorporateTravelRequest) -> str:
+    plan = request.generated_plan
+    notes = " ".join(plan.agent_notes if plan else [])
+    if request.preferences.past_hotel_preference or "Traveller history note:" in notes:
+        return "Reason from your previous journeys"
+    return "Reason from the submitted request"
+
+
+def _review_hotel_special_requests(request: CorporateTravelRequest, hotel, flight) -> list[str]:
+    early_check_in = _early_check_in_request(hotel, flight)
+    return _unique_text([
+        *hotel.unsent_special_requests,
+        early_check_in,
+        _breakfast_request(request, hotel),
+        *_premium_service_requests(request, hotel, flight),
+    ])
+
+
+def _generated_review_special_requests(request: CorporateTravelRequest) -> list[str]:
+    plan = request.generated_plan
+    if not plan:
+        return []
+    requests: list[str] = []
+    for index, option in enumerate(plan.travel_options[:CLIENT_REVIEW_OPTION_COUNT], start=0):
+        flight = next((offer for offer in plan.flight_offers if offer.id == option.flight_offer_id), None)
+        hotel = plan.hotel_offers[index] if index < len(plan.hotel_offers) else None
+        if hotel:
+            requests.extend(_review_hotel_special_requests(request, hotel, flight))
+    return _unique_text(requests)
+
+
+def _early_check_in_request(hotel, flight) -> str | None:
+    arrival = _arrival_datetime_from_flight(flight)
+    check_in_minutes = _time_minutes(hotel.check_in_starts_at)
+    if not arrival or check_in_minutes is None:
+        return None
+    if hotel.check_in and arrival.date() != hotel.check_in:
+        return None
+    arrival_minutes = arrival.hour * 60 + arrival.minute
+    if arrival_minutes >= check_in_minutes:
+        return None
+    arrival_label = arrival.strftime("%H:%M")
+    check_in_label = hotel.check_in_starts_at or "standard hotel check-in"
+    return f"Request early hotel check-in because destination arrival is {arrival_label} and standard hotel check-in starts at {check_in_label}."
+
+
+def _breakfast_request(request: CorporateTravelRequest, hotel) -> str | None:
+    text = " ".join([
+        request.preferences.meal_preference or "",
+        request.preferences.hotel_preference or "",
+        request.preferences.preferred_hotel_area or "",
+        hotel.room_notes or "",
+        hotel.summary or "",
+        " ".join(request.special_requests),
+    ]).lower()
+    if "breakfast" not in text:
+        return None
+    return "Request breakfast-inclusive rate or breakfast package for the stay."
+
+
+def _premium_service_requests(request: CorporateTravelRequest, hotel, flight) -> list[str]:
+    text = " ".join([
+        request.traveller_details.employee_band or "",
+        request.traveller_details.employee_level or "",
+        request.company_details.approval_band or "",
+        request.company_details.policy_tier or "",
+        flight.cabin if flight else "",
+        hotel.summary or "",
+        hotel.room_notes or "",
+        " ".join(request.special_requests),
+    ]).lower()
+    premium_context = any(marker in text for marker in ("ceo", "chief", "founder", "president", "chair", "executive", "business", "first", "premium", "suite", "5-star"))
+    if not premium_context:
+        return []
+    return [
+        "Request luggage assistance on arrival and departure.",
+        "Request dedicated guest-relations or butler support if available for the premium stay.",
+    ]
+
+
+def _arrival_datetime_from_flight(flight) -> datetime | None:
+    if not flight:
+        return None
+    matches = ISO_DATETIME_PATTERN.findall(flight.outbound or "")
+    if not matches:
+        return None
+    try:
+        return datetime.fromisoformat(matches[-1])
+    except ValueError:
+        return None
+
+
+def _time_minutes(value: str | None) -> int | None:
+    match = re.search(r"(\d{1,2}):(\d{2})", value or "")
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _unique_text(items: list[str | None]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in items:
+        value = mask_sensitive_customer_text(item or "").strip()
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(value)
+    return unique
 
 
 def _complete_request_from_client_approval_agent(
@@ -1343,6 +2319,27 @@ def download_client_request_form_pdf(
     )
 
 
+@app.get("/api/corporate/request-form.docx")
+def download_client_request_form_docx(
+    x_travel_purpose: str | None = Header(default=None),
+    context: AuthContext = Depends(require_auth),
+    store: TravelStore = Depends(get_store),
+) -> StreamingResponse:
+    purpose = protected_purpose(x_travel_purpose, store, context, "corporate.request_form.denied")
+    try:
+        ensure_scope(context, "travel:plan", purpose)
+    except SecurityError as exc:
+        audit_security_decision(store, context, "corporate.request_form.denied", str(exc), purpose, "deny")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
+
+    audit_security_decision(store, context, "corporate.request_form.allowed", "Client request Word form generated.", purpose, "allow")
+    return StreamingResponse(
+        BytesIO(_client_request_docx_bytes()),
+        media_type=DOCX_CONTENT_TYPE,
+        headers={"Content-Disposition": 'attachment; filename="client_travel_request_form.docx"'},
+    )
+
+
 @app.post("/api/corporate/upload-excel", response_model=CorporateImportResponse)
 @app.post("/api/corporate/requests/upload-excel", response_model=CorporateImportResponse)
 async def upload_corporate_excel(
@@ -1361,8 +2358,14 @@ async def upload_corporate_excel(
     filename = (file.filename or "").lower()
     content_type = (file.content_type or "").lower()
     try:
-        if filename.endswith(".pdf") or content_type == "application/pdf":
+        if _is_pdf_upload(filename, content_type):
             request_rows = _corporate_request_rows_from_pdf(content)
+            policy_rows = []
+            employee_rows = []
+            history_rows = []
+            visa_rows = []
+        elif _is_docx_upload(filename, content_type):
+            request_rows = _corporate_request_rows_from_docx(content)
             policy_rows = []
             employee_rows = []
             history_rows = []
@@ -1371,22 +2374,24 @@ async def upload_corporate_excel(
             from openpyxl import load_workbook
 
             workbook = load_workbook(BytesIO(content), data_only=True)
-            request_rows, employee_rows, history_rows, visa_rows = _corporate_profile_workbook_rows(workbook, file.filename or "company_profile.xlsx")
-            policy_rows: list[dict[str, object]] = []
+            request_rows, policy_rows, employee_rows, history_rows, visa_rows = _corporate_profile_workbook_rows(workbook, file.filename or "company_profile.xlsx")
+        _validated_corporate_request_rows(request_rows)
+    except TravelFormValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.user_message) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid travel form") from exc
 
     created_ids: list[str] = []
     now = datetime.now(timezone.utc)
-    for row in request_rows:
-        corporate_request = _corporate_request_from_row(row, context, now)
-        saved_request = store.save_corporate_request(corporate_request)
-        processed_request = _run_automated_pipeline(store, saved_request, context, purpose)
-        created_ids.append(processed_request.id)
     policy_count = store.save_reference_rows("company_policy", policy_rows)
     history_count = store.save_reference_rows("traveller_history", history_rows)
     employee_count = _save_employee_profiles_from_rows(store, history_rows, now)
     visa_count = store.save_reference_rows("visa_rules", visa_rows)
+    for row in request_rows:
+        corporate_request = request_with_component_dependencies(_request_with_effective_budget(_corporate_request_from_row(row, context, now)))
+        saved_request = store.save_corporate_request(corporate_request)
+        processed_request = _run_automated_pipeline(store, saved_request, context, purpose)
+        created_ids.append(processed_request.id)
     audit_security_decision(store, context, "corporate.excel.allowed", "Corporate Excel workbook imported.", purpose, "allow")
     return CorporateImportResponse(
         request_count=len(created_ids),
@@ -1565,6 +2570,9 @@ def _corporate_pipeline_events(store: TravelStore, request_id: str) -> list[Corp
 
 
 def _pipeline_stage_from_audit(event_type: str) -> str:
+    stage = PIPELINE_STAGE_BY_EVENT_TYPE.get(event_type)
+    if stage:
+        return stage
     if "review_link" in event_type:
         return "review_link_email"
     if "review_revision" in event_type:
@@ -1805,6 +2813,10 @@ async def record_resend_webhook(request: Request, store: TravelStore = Depends(g
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook") from exc
     data = event.data or {}
     if event.type == "email.received":
+        email_id = _resend_inbound_email_id(data)
+        existing = _existing_received_email_event(store, email_id)
+        if existing:
+            return existing
         return store.save_email_event(_record_received_email(event, store))
     tags = data.get("tags") if isinstance(data.get("tags"), dict) else {}
     request_id = tags.get("request_id") if isinstance(tags, dict) else None
@@ -1812,7 +2824,7 @@ async def record_resend_webhook(request: Request, store: TravelStore = Depends(g
     review_round = data.get("review_round") or tags.get("review_round") if isinstance(tags, dict) else None
     recorded = EmailEvent(
         request_id=str(request_id) if request_id else None,
-        kind=kind if kind in {"approval_request", "review_link", "document_update", "final_itinerary"} else None,
+        kind=kind if kind in {"approval_request", "review_link", "document_update", "final_itinerary", "client_cancelled"} else None,
         status="received",
         to=[str(item) for item in data.get("to", [])] if isinstance(data.get("to"), list) else [],
         subject=str(data.get("subject") or ""),
@@ -1825,38 +2837,46 @@ async def record_resend_webhook(request: Request, store: TravelStore = Depends(g
 
 def _record_received_email(event: ResendWebhookEvent, store: TravelStore) -> EmailEvent:
     data = event.data or {}
-    email_id = str(data.get("email_id") or data.get("id") or "")
+    email_id = _resend_inbound_email_id(data)
     to = [str(item) for item in data.get("to", [])] if isinstance(data.get("to"), list) else []
     subject = str(data.get("subject") or "Inbound travel form")
     safe_message = "Inbound email received but no travel form could be parsed. Review manually."
     request_id: str | None = None
+    requester_email: str | None = None
+    attachments: list[tuple[str, str, bytes]] = []
+    text = ""
     try:
         received = _resend_received_email(email_id)
+        requester_email = _inbound_sender_email(data, received)
         text = str(received.get("text") or received.get("body") or _html_to_text(str(received.get("html") or ""))).strip()
         received_subject = str(received.get("subject") or subject)
         context = demo_auth_context(os.getenv("TRAVEL_AI_INBOUND_OWNER_EMAIL", "demo.agent@unipro.com"))
         approved = _try_complete_inbound_approval(store, context, f"{received_subject}\n{text}")
         if approved:
-            return approved
+            return _received_email_event_with_source(approved, email_id, to, subject)
         attachments = _resend_received_attachment_bytes(email_id, data.get("attachments"))
         for filename, content_type, content in attachments:
-            if filename.lower().endswith(".pdf") or content_type.lower() == "application/pdf":
+            if _is_pdf_upload(filename, content_type):
                 selected_pdf = _try_complete_selected_option_pdf(store, context, content)
                 if selected_pdf:
-                    return selected_pdf
+                    return _received_email_event_with_source(selected_pdf, email_id, to, subject)
         rows: list[dict[str, object]] = []
         for filename, content_type, content in attachments:
-            if filename.lower().endswith(".pdf") or content_type.lower() == "application/pdf":
+            if _is_pdf_upload(filename, content_type):
                 rows = _corporate_request_rows_from_pdf(content)
+                break
+            if _is_docx_upload(filename, content_type):
+                rows = _corporate_request_rows_from_docx(content)
                 break
         if not rows and text:
             rows = _corporate_request_rows_from_text(text)
         if rows:
+            _validated_corporate_request_rows(rows)
             now = datetime.now(timezone.utc)
             saved_requests = [
                 _run_automated_pipeline(
                     store,
-                    store.save_corporate_request(_corporate_request_from_row(row, context, now)),
+                    store.save_corporate_request(request_with_component_dependencies(_corporate_request_from_row(_row_with_requester_email(row, requester_email), context, now))),
                     context,
                     "process inbound client travel request form",
                 )
@@ -1868,6 +2888,17 @@ def _record_received_email(event: ResendWebhookEvent, store: TravelStore) -> Ema
                 if len(saved_requests) == 1
                 else f"Inbound email received and {len(saved_requests)} requests entered the automated pipeline."
             )
+    except TravelFormValidationError as exc:
+        safe_message = f"Inbound email received but the travel form needs correction: {exc.user_message}"
+        if requester_email:
+            _send_inbound_form_rejection_email(store, requester_email, subject, exc.user_message)
+        log_internal_issue(
+            logging.getLogger(INTERNAL_LOGGER_NAME),
+            "corporate.inbound.validation_failed",
+            "Inbound travel form failed validation.",
+            level=logging.WARNING,
+            validation_errors=exc.errors,
+        )
     except Exception:
         safe_message = "Inbound email received but could not be imported. Review manually."
     return EmailEvent(
@@ -1878,9 +2909,94 @@ def _record_received_email(event: ResendWebhookEvent, store: TravelStore) -> Ema
         subject=subject,
         provider_message_id=email_id,
         safe_message=safe_message,
-        body_text=mask_sensitive_customer_text(text)[:6000] if "text" in locals() else None,
-        attachment_names=[filename for filename, _, _ in attachments] if "attachments" in locals() else [],
+        body_text=mask_sensitive_customer_text(text)[:6000] if text else None,
+        attachment_names=[filename for filename, _, _ in attachments],
     )
+
+
+def _resend_inbound_email_id(data: dict[str, Any]) -> str:
+    return str(data.get("email_id") or data.get("id") or "")
+
+
+def _existing_received_email_event(store: TravelStore, email_id: str) -> EmailEvent | None:
+    if not email_id:
+        return None
+    for event in store.list_email_events():
+        if event.provider_message_id == email_id and event.status == "received":
+            return event
+    return None
+
+
+def _received_email_event_with_source(event: EmailEvent, email_id: str, to: list[str], subject: str) -> EmailEvent:
+    return event.model_copy(update={
+        "provider_message_id": event.provider_message_id or email_id,
+        "to": event.to or to,
+        "subject": event.subject or subject,
+    })
+
+
+def _send_inbound_form_rejection_email(store: TravelStore, to_email: str, subject: str, reason: str) -> EmailEvent:
+    correction_request = CorporateTravelRequest(
+        id=f"corp_rejected_{uuid4().hex[:12]}",
+        status="Cancelled",
+        requester_email=to_email,
+        traveller_details=TravellerDetails(traveler_name="travel request form"),
+        travel_details=TravelDetails(origin="Submitted form", destination="Needs correction"),
+    )
+    event = send_resend_notification(
+        correction_request.id,
+        correction_request,
+        NotificationRequest(
+            kind="document_update",
+            to=[to_email],
+            note=(
+                "We could not process your travel request form because it needs a correction. "
+                f"{reason} Please update the form and resend it."
+            ),
+        ),
+    )
+    saved = store.save_email_event(event)
+    log_internal_issue(
+        logging.getLogger(INTERNAL_LOGGER_NAME),
+        "corporate.inbound.validation_reply",
+        "Inbound form correction email was recorded.",
+        level=logging.WARNING,
+        request_id=correction_request.id,
+        delivery_status=saved.status,
+        recipient_domain=to_email.rsplit("@", 1)[-1].lower() if "@" in to_email else "",
+    )
+    return saved
+
+
+def _inbound_sender_email(webhook_data: dict[str, Any], received: dict[str, Any]) -> str | None:
+    for value in (webhook_data.get("from"), received.get("from"), received.get("sender")):
+        email = _email_address(value)
+        if email:
+            return email
+    return None
+
+
+def _email_address(value: object) -> str | None:
+    if isinstance(value, dict):
+        value = value.get("email") or value.get("address") or value.get("from")
+    if not value:
+        return None
+    _, email = parseaddr(str(value))
+    return email.strip() or None
+
+
+def _row_with_requester_email(row: dict[str, object], requester_email: str | None) -> dict[str, object]:
+    if not requester_email:
+        return row
+    return {**row, "requester_email": requester_email}
+
+
+def _is_pdf_upload(filename: str, content_type: str) -> bool:
+    return filename.lower().endswith(".pdf") or content_type.lower() == "application/pdf"
+
+
+def _is_docx_upload(filename: str, content_type: str) -> bool:
+    return filename.lower().endswith(".docx") or content_type.lower() == DOCX_CONTENT_TYPE
 
 
 def _try_complete_inbound_approval(store: TravelStore, context: AuthContext, text: str) -> EmailEvent | None:
@@ -1898,11 +3014,12 @@ def _try_complete_inbound_approval(store: TravelStore, context: AuthContext, tex
         context,
         "process inbound client itinerary approval",
     )
+    to_email = _delivery_email_for_request(completed)
     return EmailEvent(
         request_id=completed.id,
         kind="final_itinerary",
         status="received",
-        to=[completed.traveller_details.traveler_email] if completed.traveller_details.traveler_email else [],
+        to=[to_email] if to_email else [],
         subject="Client approved itinerary",
         safe_message=f"Client approved itinerary for request {completed.id}; final itinerary pipeline completed.",
         body_text=mask_sensitive_customer_text(text)[:6000],
@@ -1928,11 +3045,12 @@ def _try_complete_selected_option_pdf(store: TravelStore, context: AuthContext, 
         context,
         "process returned selected itinerary pdf",
     )
+    to_email = _delivery_email_for_request(completed)
     return EmailEvent(
         request_id=completed.id,
         kind="final_itinerary",
         status="received",
-        to=[completed.traveller_details.traveler_email] if completed.traveller_details.traveler_email else [],
+        to=[to_email] if to_email else [],
         subject="Selected itinerary PDF received",
         safe_message=f"Selected itinerary PDF recognized for request {completed.id}; final itinerary pipeline completed.",
         body_text=mask_sensitive_customer_text(text)[:6000],
@@ -2136,8 +3254,9 @@ def _sheet_rows_any(workbook: Any, *sheet_names: str) -> list[dict[str, object]]
     return []
 
 
-def _corporate_profile_workbook_rows(workbook: Any, filename: str) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+def _corporate_profile_workbook_rows(workbook: Any, filename: str) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     request_rows = _sheet_rows_any(workbook, "Travel Requests", "Requests")
+    policy_rows = _sheet_rows_any(workbook, "Company Policy", "Policies", "Travel Policy")
     old_employee_rows = _sheet_rows_any(workbook, "Employee Details", "Employees")
     old_history_rows = _sheet_rows_any(workbook, "Traveller History", "Traveler History", "Travel History")
     old_visa_rows = _sheet_rows_any(workbook, "Visa Rules")
@@ -2150,7 +3269,7 @@ def _corporate_profile_workbook_rows(workbook: Any, filename: str) -> tuple[list
     history_rows = _sheet_rows_any(workbook, "Past Travel History")
     hotel_insight_rows = _sheet_rows_any(workbook, "Hotel Insights")
 
-    company_name = _workbook_company_name(filename, [*request_rows, *old_employee_rows, *profile_rows])
+    company_name = _workbook_company_name(filename, [*request_rows, *policy_rows, *old_employee_rows, *profile_rows])
     normalized_profiles = _normalized_traveler_profile_rows(
         profile_rows,
         preference_rows,
@@ -2165,6 +3284,7 @@ def _corporate_profile_workbook_rows(workbook: Any, filename: str) -> tuple[list
     normalized_visa = _normalized_visa_record_rows(visa_record_rows, profile_rows, company_name)
     return (
         [_row_with_company(row, company_name) for row in request_rows],
+        [_row_with_company(row, company_name) for row in policy_rows],
         [_row_with_company(row, company_name) for row in old_employee_rows],
         [
             *[_row_with_company(row, company_name) for row in old_employee_rows],
@@ -2204,9 +3324,10 @@ def _normalized_traveler_profile_rows(
             "traveler_name": _str(profile, "name", "traveler_name"),
             "traveler_email": _str(profile, "email", "traveler_email"),
             "company_name": _str(profile, "company_name", "company") or _company_from_email(_str(profile, "email")) or company_name,
-            "profile_type": _str(profile, "profile_type"),
+            "profile_type": _str(profile, "employee_band", "traveler_band", "band", "profile_type"),
             "department": _str(profile, "department"),
-            "employee_level": _str(profile, "profile_type"),
+            "employee_level": _str(profile, "employee_band", "traveler_band", "band", "profile_type"),
+            "employee_band": _str(profile, "employee_band", "traveler_band", "band", "profile_type"),
             "location": _str(profile, "base_location"),
             "home_airport": _str(profile, "home_airport"),
             "phone": _str(profile, "phone"),
@@ -2290,10 +3411,58 @@ def _corporate_request_rows_from_pdf(content: bytes) -> list[dict[str, object]]:
     return _corporate_request_rows_from_text(text)
 
 
+def _corporate_request_rows_from_docx(content: bytes) -> list[dict[str, object]]:
+    text = _extract_docx_text(content)
+    return _corporate_request_rows_from_text(text)
+
+
 def _corporate_request_rows_from_text(text: str) -> list[dict[str, object]]:
     sections = _travel_form_sections(text)
     rows = [_corporate_request_row_from_text(section) for section in sections]
     return rows
+
+
+def _validated_corporate_request_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        prefix = f"Request {index}: " if len(rows) > 1 else ""
+        errors.extend(f"{prefix}{error}" for error in _travel_form_validation_errors(row))
+    if errors:
+        raise TravelFormValidationError(errors)
+    return rows
+
+
+def _validate_corporate_request_route(request: CorporateTravelRequest) -> None:
+    errors = _travel_form_validation_errors({
+        "origin": request.travel_details.origin,
+        "destination": request.travel_details.destination,
+    })
+    if errors:
+        raise TravelFormValidationError(errors)
+
+
+def _travel_form_validation_errors(row: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    for field, label in (("origin", "Origin city / airport"), ("destination", "Destination city / airport")):
+        endpoint_error = _route_endpoint_validation_error(label, row.get(field))
+        if endpoint_error:
+            errors.append(endpoint_error)
+    origin_key = _row_key(row.get("origin"))
+    destination_key = _row_key(row.get("destination"))
+    if origin_key and destination_key and origin_key == destination_key:
+        errors.append("Origin and destination must be different city or airport values.")
+    return errors
+
+
+def _route_endpoint_validation_error(label: str, value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    key = _row_key(text)
+    if key not in COUNTRY_ONLY_ROUTE_KEYS:
+        return None
+    example = COUNTRY_ROUTE_EXAMPLES.get(key, "a specific city or airport")
+    return f"{label} must be a city or airport, not a country. For {text}, use {example} and put the country in Destination country."
 
 
 def _travel_form_sections(text: str) -> list[str]:
@@ -2310,6 +3479,7 @@ def _corporate_request_row_from_text(text: str) -> dict[str, object]:
         "traveler_name": _pdf_field(text, "traveller name", "traveler name", "name"),
         "traveler_email": _pdf_field(text, "traveller email", "traveler email", "email"),
         "employee_id": _pdf_field(text, "employee id"),
+        "employee_band": _pdf_field(text, "employee band", "traveller band", "traveler band", "policy band", "profile type", "employee level", "designation", "role", "traveller level", "traveler level"),
         "department": _pdf_field(text, "department"),
         "nationality": _pdf_field(text, "nationality"),
         "passport_expiry": _pdf_field(text, "passport expiry"),
@@ -2319,24 +3489,18 @@ def _corporate_request_row_from_text(text: str) -> dict[str, object]:
         "depart_date": _pdf_field(text, "departure date", "depart date"),
         "return_date": _pdf_field(text, "return date"),
         "trip_purpose": _pdf_field(text, "purpose / meeting location", "travel purpose", "purpose"),
-        "meeting_location": _pdf_field(text, "meeting location"),
+        "meeting_location": _pdf_field(text, "meeting office / location", "meeting location"),
         "cabin": _pdf_field(text, "cabin"),
         "flight_preference": _pdf_field(text, "flight preference"),
-        "hotel_preference": _pdf_field(text, "hotel area / star rating", "hotel preference", "hotel location preference", "office or location preference", "office location preference", "preferred hotel area"),
+        "hotel_preference": _pdf_field(text, "hotel area / location preference", "hotel area / star rating", "hotel preference", "hotel location preference", "office or location preference", "office location preference", "preferred hotel area"),
         "include_outbound_flight": _pdf_field(text, "include outbound flight", "outbound flight needed", "origin flight needed", "include origin flight", "departure flight needed"),
         "include_return_flight": _pdf_field(text, "include return flight", "return flight needed", "return flight required"),
         "include_hotel": _pdf_field(text, "include hotel", "hotel needed", "book hotel", "hotel required"),
+        "include_ground_transfer": _pdf_field(text, "include ground transfer", "ground transfer needed", "airport transfer needed", "cab needed"),
         "airport_transfer_needed": _pdf_field(text, "airport transfer needed"),
-        "special_requests": _pdf_field(text, "special requests"),
+        "meal_preference": _pdf_field(text, "meal preference"),
+        "special_requests": _pdf_field(text, "trip-specific requests", "trip specific requests", "special requests"),
     }
-    budget = _pdf_field(text, "approved budget and currency", "budget")
-    if budget:
-        amount = re.search(r"\d[\d,]*(?:\.\d+)?", budget)
-        currency = re.search(r"\b(USD|INR|EUR|GBP|CAD|AUD|JPY|ZAR)\b", budget, re.IGNORECASE)
-        if amount:
-            row["total_budget"] = amount.group(0).replace(",", "")
-        if currency:
-            row["currency"] = currency.group(1).upper()
     row = {key: value for key, value in row.items() if value not in {None, ""}}
     if not row.get("destination_country"):
         inferred_country = _infer_destination_country(str(row.get("destination") or ""), str(row.get("meeting_location") or ""), str(row.get("hotel_preference") or ""))
@@ -2381,6 +3545,24 @@ def _extract_pdf_text(content: bytes) -> str:
     return _extract_simple_pdf_text(content)
 
 
+def _extract_docx_text(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            document_xml = archive.read("word/document.xml")
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError("Invalid Word travel form") from exc
+
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    root = ElementTree.fromstring(document_xml)
+    lines: list[str] = []
+    for paragraph in root.findall(".//w:p", namespace):
+        parts = [node.text or "" for node in paragraph.findall(".//w:t", namespace)]
+        line = "".join(parts).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def _extract_simple_pdf_text(content: bytes) -> str:
     parts = re.findall(rb"\(((?:\\.|[^\\)])*)\)\s*Tj", content)
     lines = []
@@ -2393,7 +3575,7 @@ def _extract_simple_pdf_text(content: bytes) -> str:
 def _pdf_field(text: str, *labels: str) -> str | None:
     normalized = text.replace("\r", "\n")
     for label in labels:
-        pattern = re.compile(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.+?)\s*$")
+        pattern = re.compile(rf"(?im)^\s*{re.escape(label)}(?:\s*\([^:\n]*\))?\s*:\s*(.+?)\s*$")
         match = pattern.search(normalized)
         if match:
             value = match.group(1).strip(" _")
@@ -2464,19 +3646,15 @@ def _company_policy_rows_from_pdf(content: bytes, company_name: str | None, file
     extracted_company = company_name or _pdf_field(text, "company", "client", "organization", "organisation")
     company = (extracted_company or _company_from_filename(filename) or "Company pending").strip()
     allowed_cabins = _pdf_field(text, "allowed cabins", "cabin policy", "flight cabin")
-    budget = _pdf_field(text, "maximum trip budget", "max trip budget", "budget limit", "maximum budget")
-    hotel_limit = _pdf_field(text, "hotel nightly limit", "nightly hotel limit", "hotel limit")
+    hotel_tier = _pdf_field(text, "hotel tier", "hotel star tier", "hotel stars")
     approval_rule = _pdf_field(text, "approval rule", "approval requirement", "approvals")
     policy_tier = _pdf_field(text, "policy tier", "tier")
     notes = _pdf_field(text, "notes", "policy notes")
-    currency = _currency_from_text(" ".join([budget or "", hotel_limit or ""])) or "USD"
     rules = _policy_rules_from_text(text)
     if allowed_cabins:
         rules.append(f"Allowed cabins: {allowed_cabins}")
-    if budget:
-        rules.append(f"Maximum trip budget: {budget}")
-    if hotel_limit:
-        rules.append(f"Hotel nightly limit: {hotel_limit}")
+    if hotel_tier:
+        rules.append(f"Hotel tier: {hotel_tier}")
     if approval_rule:
         rules.append(f"Approval rule: {approval_rule}")
     if notes:
@@ -2485,9 +3663,7 @@ def _company_policy_rows_from_pdf(content: bytes, company_name: str | None, file
         "company_name": company,
         "policy_tier": policy_tier or "Standard",
         "allowed_cabins": _cabin_list_from_text(allowed_cabins),
-        "max_budget": _money_int(budget),
-        "hotel_nightly_limit": _money_int(hotel_limit),
-        "currency": currency,
+        "hotel_tier": hotel_tier,
         "approval_rule": approval_rule,
         "notes": notes,
         "policy_text": _compact_text(text)[:1600],
@@ -2508,8 +3684,7 @@ def _save_policy_group_from_pdf_rows(store: TravelStore, rows: list[dict[str, ob
     for row in rows:
         for label, value in [
             ("Allowed cabins", row.get("allowed_cabins")),
-            ("Maximum trip budget", _money_display(row.get("max_budget"), row.get("currency"))),
-            ("Hotel nightly limit", _money_display(row.get("hotel_nightly_limit"), row.get("currency"))),
+            ("Hotel tier", row.get("hotel_tier")),
             ("Approval rule", row.get("approval_rule")),
             ("Policy notes", row.get("notes") or row.get("rule")),
         ]:
@@ -2587,8 +3762,9 @@ def _enrich_request_from_reference_data(
     request: CorporateTravelRequest,
     history_rows: list[dict[str, object]],
     visa_rows: list[dict[str, object]],
+    traveler_matches: list[dict[str, object]] | None = None,
 ) -> CorporateTravelRequest:
-    matches = _matching_traveler_rows(request, history_rows)
+    matches = traveler_matches if traveler_matches is not None else _matching_traveler_rows(request, history_rows)
     if not matches:
         return request
     merged = _merged_reference_row(matches)
@@ -2603,7 +3779,8 @@ def _enrich_request_from_reference_data(
         "traveler_email": traveller.traveler_email or _str(merged, "traveler_email", "email", "employee_email"),
         "phone": traveller.phone or _str(merged, "phone", "phone_number", "mobile"),
         "employee_id": traveller.employee_id or _str(merged, "employee_id", "traveler_id"),
-        "employee_level": traveller.employee_level or _str(merged, "employee_level", "profile_type"),
+        "employee_level": traveller.employee_level or _str(merged, "employee_band", "traveler_band", "profile_type", "employee_level"),
+        "employee_band": traveller.employee_band or _str(merged, "employee_band", "traveler_band", "profile_type", "employee_level"),
         "department": traveller.department or _str(merged, "department"),
         "nationality": traveller.nationality or _str(visa, "from_country", "nationality") or _str(merged, "nationality"),
         "passport_number": traveller.passport_number or _str(visa, "passport_number") or _str(merged, "passport_number"),
@@ -2618,7 +3795,8 @@ def _enrich_request_from_reference_data(
         "cost_center": company.cost_center or _str(merged, "cost_center"),
         "approving_manager": company.approving_manager or _str(merged, "approving_manager", "manager"),
         "approval_manager_email": company.approval_manager_email or _str(merged, "approval_manager_email", "manager_email"),
-        "policy_tier": company.policy_tier or _str(merged, "policy_tier", "profile_type"),
+        "approval_band": company.approval_band or _str(merged, "approval_band", "approver_band"),
+        "policy_tier": company.policy_tier or _str(merged, "policy_tier", "approval_band", "profile_type"),
     }
     travel_update = {
         "origin": travel.origin or _str(merged, "home_airport", "origin", "base_location", "location"),
@@ -2632,6 +3810,7 @@ def _enrich_request_from_reference_data(
         "include_outbound_flight": travel.include_outbound_flight,
         "include_return_flight": travel.include_return_flight,
         "include_hotel": travel.include_hotel,
+        "include_ground_transfer": travel.include_ground_transfer,
         "travelers": travel.travelers,
         "cabin": travel.cabin,
     }
@@ -2655,6 +3834,29 @@ def _enrich_request_from_reference_data(
             "preferences": preferences.model_copy(update=preference_update),
         }
     )
+
+
+def _has_traveler_profile_rows(history_rows: list[dict[str, object]]) -> bool:
+    return any(
+        _str(row, "traveler_email", "traveller_email", "email", "employee_email", "employee_id", "traveler_id", "traveler_name", "traveller_name", "employee_name", "name")
+        for row in history_rows
+    )
+
+
+def _traveler_profile_warning(history_rows: list[dict[str, object]], traveler_matches: list[dict[str, object]]) -> str | None:
+    if traveler_matches or not _has_traveler_profile_rows(history_rows):
+        return None
+    return NEW_TRAVELER_PROFILE_WARNING
+
+
+def _plan_with_profile_warning(plan: CorporateTravelPlan, warning: str | None) -> CorporateTravelPlan:
+    return _plan_with_agent_note(plan, warning)
+
+
+def _plan_with_agent_note(plan: CorporateTravelPlan, note: str | None) -> CorporateTravelPlan:
+    if not note or note in plan.agent_notes:
+        return plan
+    return plan.model_copy(update={"agent_notes": [note, *plan.agent_notes]})
 
 
 def _document_status(expiry: date | None) -> str:
@@ -2789,18 +3991,13 @@ def _policy_rules_from_text(text: str) -> list[str]:
             label, value = line.split(":", 1)
             if value.strip() and label.strip().lower() not in {"company", "client", "organization", "organisation"}:
                 rules.append(f"{label.strip()}: {value.strip()}")
-        elif any(marker in line.lower() for marker in ("allowed", "approval", "limit", "budget", "cabin", "hotel", "passport", "visa")):
+        elif "budget" not in line.lower() and any(marker in line.lower() for marker in ("allowed", "approval", "cabin", "hotel", "passport", "visa")):
             rules.append(line)
     return rules[:12]
 
 
 def _compact_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
-
-
-def _currency_from_text(value: str) -> str | None:
-    match = re.search(r"\b(USD|INR|EUR|GBP|CAD|AUD|JPY|ZAR)\b", value or "", re.IGNORECASE)
-    return match.group(1).upper() if match else None
 
 
 def _cabin_list_from_text(value: str | None) -> str | None:
@@ -2828,6 +4025,117 @@ def _money_display(value: object, currency: object) -> str | None:
     if not amount:
         return None
     return f"{currency or 'USD'} {amount}"
+
+
+def _request_with_band_policy(
+    request: CorporateTravelRequest,
+    policy_rows: list[dict[str, object]],
+) -> tuple[CorporateTravelRequest, list[dict[str, object]], str | None]:
+    matches = _matching_band_policy_rows(request, policy_rows)
+    if not matches:
+        guess = _band_policy_guess_row(request)
+        if not guess:
+            return request, [], None
+        guessed_request, _, _ = _request_with_band_policy(request, [guess])
+        band_label = request.traveller_details.employee_band or request.traveller_details.employee_level or "submitted band"
+        note = f"No uploaded Company Policy matched; used {band_label} for hotel tier and cabin policy."
+        return guessed_request, [guess], note
+
+    policy = _merged_reference_row(matches)
+    traveller = request.traveller_details
+    company = request.company_details
+    policy_band = _str(policy, "employee_band", "traveler_band", "traveller_band", "band", "profile_type")
+
+    traveller_update: dict[str, object] = {}
+    if policy_band and not traveller.employee_band:
+        traveller_update["employee_band"] = policy_band
+    if policy_band and not traveller.employee_level:
+        traveller_update["employee_level"] = policy_band
+
+    company_update: dict[str, object] = {}
+    policy_company = _row_company(policy)
+    if not company.company_name and policy_company != "Company pending":
+        company_update["company_name"] = policy_company
+    approval_band = _str(policy, "approval_band", "approver_band")
+    if approval_band and not company.approval_band:
+        company_update["approval_band"] = approval_band
+    policy_tier = _str(policy, "policy_tier", "tier")
+    request_band_key = _row_key(traveller.employee_band or traveller.employee_level)
+    current_tier_key = _row_key(company.policy_tier)
+    if policy_tier and (not company.policy_tier or current_tier_key == request_band_key):
+        company_update["policy_tier"] = policy_tier
+
+    policy_notes = _str(policy, "approval_rule", "policy_notes", "notes")
+
+    updated = request.model_copy(
+        update={
+            "traveller_details": traveller.model_copy(update=traveller_update),
+            "company_details": company.model_copy(update=company_update),
+            "budgets": request.budgets.model_copy(update={"policy_notes": policy_notes}) if policy_notes and not request.budgets.policy_notes else request.budgets,
+        }
+    )
+    band_label = traveller.employee_band or traveller.employee_level or policy_band or "submitted band"
+    return updated, matches, f"Band policy matched for {band_label}; hotel tier and cabin policy were applied from Company Policy."
+
+
+def _band_policy_guess_row(request: CorporateTravelRequest) -> dict[str, object] | None:
+    tier = None
+    for value in (request.traveller_details.employee_band, request.traveller_details.employee_level):
+        tier = _band_policy_tier_from_text(value)
+        if tier:
+            break
+    if not tier:
+        return None
+    band_label = request.traveller_details.employee_band or request.traveller_details.employee_level
+    return {
+        **BAND_POLICY_GUESS_ROWS[tier],
+        "employee_band": band_label,
+        "approval_band": request.company_details.approval_band or band_label,
+    }
+
+
+def _band_policy_tier_from_text(value: object) -> str | None:
+    compact = _row_key(value)
+    if not compact:
+        return None
+    if compact in {"1", "band1"} or ("band" in compact and compact.endswith("1")):
+        return "employee"
+    if compact in {"2", "band2"} or ("band" in compact and compact.endswith("2")):
+        return "manager"
+    if compact in {"3", "band3"} or ("band" in compact and compact.endswith("3")):
+        return "executive"
+    if any(marker in compact for marker in ("ceo", "chief", "founder", "president", "chair", "executive", "principal", "bandc", "bandx")):
+        return "executive"
+    if any(marker in compact for marker in ("director", "vp", "vicepresident", "head", "bandm3", "bandm4", "bandm5")):
+        return "senior"
+    if any(marker in compact for marker in ("manager", "bandm1", "bandm2")):
+        return "manager"
+    if any(marker in compact for marker in ("employee", "associate", "analyst", "lead", "staff", "individualcontributor", "bande", "bandic")):
+        return "employee"
+    return None
+
+
+def _matching_band_policy_rows(request: CorporateTravelRequest, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    band_key = _row_key(request.traveller_details.employee_band or request.traveller_details.employee_level)
+    if band_key:
+        matches = [
+            row for row in rows
+            if _row_key(_str(row, "employee_band", "traveler_band", "traveller_band", "band", "profile_type")) == band_key
+        ]
+        if matches:
+            company_key = _row_key(request.company_details.company_name)
+            if company_key:
+                company_matches = [row for row in matches if _row_key(_row_company(row)) == company_key]
+                if company_matches:
+                    return company_matches
+            return matches
+    tier_key = _row_key(request.company_details.policy_tier)
+    if not tier_key:
+        return []
+    return [
+        row for row in rows
+        if _row_key(_str(row, "policy_tier", "tier")) == tier_key
+    ]
 
 
 def _matching_traveler_rows(request: CorporateTravelRequest, rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -2941,7 +4249,7 @@ def _corporate_template_workbook_bytes() -> bytes:
             "nationality",
             "origin",
             "phone",
-            "employee_level",
+            "employee_band",
             "destination",
             "destination_country",
             "depart_date",
@@ -2950,17 +4258,14 @@ def _corporate_template_workbook_bytes() -> bytes:
             "meeting_location",
             "flexible_dates",
             "cabin",
-            "total_budget",
-            "currency",
             "passport_expiry",
             "visa_status",
             "visa_expiry",
-            "approval_manager_email",
+            "approval_band",
             "preferred_airline",
             "flight_preference",
             "hotel_preference",
             "preferred_hotel_area",
-            "hotel_star_rating",
             "past_hotel_preference",
             "airport_transfer_needed",
             "meal_preference",
@@ -2981,7 +4286,7 @@ def _corporate_template_workbook_bytes() -> bytes:
             "India",
             "Hyderabad",
             "+91 98765 43210",
-            "Manager",
+            "2",
             "Johannesburg",
             "South Africa",
             "2026-06-10",
@@ -2990,17 +4295,14 @@ def _corporate_template_workbook_bytes() -> bytes:
             "Sandton client office",
             "yes",
             "economy",
-            1900,
-            "USD",
             "2028-01-15",
             "Valid visa on file",
             "2027-08-20",
-            "manager@example.com",
+            "Band A2",
             "Qatar Airways",
             "Short layover",
             "Business hotel near client office",
             "Sandton",
-            "4",
             "Garden Court",
             "yes",
             "Vegetarian",
@@ -3014,8 +4316,8 @@ def _corporate_template_workbook_bytes() -> bytes:
     )
 
     policy = workbook.create_sheet("Company Policy")
-    policy.append(["policy_tier", "allowed_cabins", "max_budget", "currency", "approval_rule", "notes"])
-    policy.append(["standard", "economy,premium_economy", 1950, "USD", "manager approval above budget", "Prefer refundable fares for client-facing trips"])
+    policy.append(["policy_tier", "employee_band", "approval_band", "allowed_cabins", "hotel_tier", "approval_rule", "notes"])
+    policy.append(["standard", "2", "Band A2", "economy,premium_economy", "Manager tier: 3/4-star hotels", "approval required for cabin or document policy exceptions", "Prefer refundable fares for client-facing trips"])
 
     employees = workbook.create_sheet("Employee Details")
     employees.append([
@@ -3024,7 +4326,7 @@ def _corporate_template_workbook_bytes() -> bytes:
         "employee_email",
         "company_name",
         "department",
-        "employee_level",
+        "employee_band",
         "location",
         "nationality",
         "passport_number",
@@ -3047,7 +4349,7 @@ def _corporate_template_workbook_bytes() -> bytes:
         "anika.rao@example.com",
         "Unipro",
         "Sales",
-        "Manager",
+        "2",
         "Hyderabad",
         "India",
         "Z1234567",
@@ -3078,10 +4380,77 @@ def _corporate_template_workbook_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _final_total_for_origin_currency(request: CorporateTravelRequest) -> tuple[int, str] | None:
+    plan = request.generated_plan
+    if not plan:
+        return None
+    selected_option = _selected_travel_option_for_request(request)
+    estimated_cost = selected_option.estimated_cost if selected_option else plan.budget_policy_check.estimated_cost
+    final_currency = origin_city_currency(request.travel_details.origin, request.budgets.currency)
+    final_total = convert_final_amount(estimated_cost, request.budgets.currency or "USD", final_currency).amount
+    return int(round(final_total)), final_currency
+
+
+def _origin_currency_amount(amount: int, request: CorporateTravelRequest, source_currency: str | None = None) -> tuple[int, str]:
+    final_currency = origin_city_currency(request.travel_details.origin, request.budgets.currency)
+    final_total = convert_final_amount(amount, source_currency or request.budgets.currency or "USD", final_currency).amount
+    return int(round(final_total)), final_currency
+
+
+def _origin_currency_component_display(amount: int, currency: str | None, request: CorporateTravelRequest) -> str:
+    converted, final_currency = _origin_currency_amount(amount, request, currency)
+    return f"{converted} {final_currency}"
+
+
+def _final_flight_summary(request: CorporateTravelRequest, option: TravelOption, flight) -> str:
+    if not flight:
+        return option.flight_summary
+    fare = _origin_currency_component_display(flight.total_amount, flight.currency, request)
+    cabin = flight.cabin.replace("_", " ")
+    return f"{flight.airline}; {cabin}; {flight.outbound}; fare {fare}"
+
+
+def _final_hotel_summary(request: CorporateTravelRequest, option: TravelOption, hotel) -> str:
+    if not hotel:
+        return option.hotel_summary
+    rate = _origin_currency_component_display(hotel.total_amount, hotel.currency, request)
+    stay = f"{hotel.nights} night(s)" if hotel.nights else "stay dates pending"
+    return f"{hotel.name}; {stay}; rate {rate}"
+
+
+def _final_transfer_summary(request: CorporateTravelRequest, option: TravelOption, transfer) -> str:
+    if not transfer:
+        return option.transfer_summary
+    rate = _origin_currency_component_display(transfer.total_amount, transfer.currency, request)
+    service = transfer.service_type.replace("_", " ").title()
+    return f"{service} transfer from {transfer.pickup_airport_code} to {transfer.dropoff_label}; rate {rate}"
+
+
+def _final_customer_itinerary_note(request: CorporateTravelRequest, option: TravelOption | None = None) -> str:
+    if not request.generated_plan:
+        return ""
+    stored_note = request.generated_plan.customer_itinerary_draft
+    final_currency = origin_city_currency(request.travel_details.origin, request.budgets.currency)
+    if stored_note and not _has_non_origin_currency(stored_note, final_currency):
+        return stored_note
+    selected_option = option or _selected_travel_option_for_request(request)
+    if selected_option:
+        return _customer_itinerary_from_selected_option(request, selected_option)
+    return stored_note
+
+
+def _has_non_origin_currency(text: str, final_currency: str) -> bool:
+    codes = set(re.findall(r"\b[A-Z]{3}\b", text))
+    if any(code in DISPLAY_CURRENCY_CODES and code != final_currency for code in codes):
+        return True
+    return final_currency != "USD" and "$" in text
+
+
 def _corporate_request_workbook_bytes(request: CorporateTravelRequest) -> bytes:
     from openpyxl import Workbook
 
     workbook = Workbook()
+    final_total = _final_total_for_origin_currency(request)
     summary = workbook.active
     summary.title = "Request"
     summary.append(["field", "value"])
@@ -3096,8 +4465,9 @@ def _corporate_request_workbook_bytes(request: CorporateTravelRequest) -> bytes:
     summary.append(["depart_date", request.travel_details.depart_date.isoformat() if request.travel_details.depart_date else ""])
     summary.append(["return_date", request.travel_details.return_date.isoformat() if request.travel_details.return_date else ""])
     summary.append(["trip_purpose", request.travel_details.trip_purpose or ""])
-    summary.append(["budget", request.budgets.total_budget or ""])
-    summary.append(["currency", request.budgets.currency])
+    if final_total:
+        summary.append(["final_total", final_total[0]])
+        summary.append(["final_total_currency", final_total[1]])
     summary.append(["status", request.status])
 
     plans = workbook.create_sheet("Recommended Plans")
@@ -3119,8 +4489,10 @@ def _corporate_request_workbook_bytes(request: CorporateTravelRequest) -> bytes:
     itinerary = workbook.create_sheet("Final Itinerary")
     itinerary.append(["section", "value"])
     if request.generated_plan:
+        if final_total:
+            itinerary.append(["final_total", f"{final_total[0]} {final_total[1]}"])
         itinerary.append(["customer_message", mask_sensitive_customer_text(request.generated_plan.customer_message_draft)])
-        itinerary.append(["final_itinerary", mask_sensitive_customer_text(request.generated_plan.customer_itinerary_draft)])
+        itinerary.append(["final_itinerary", mask_sensitive_customer_text(_final_customer_itinerary_note(request))])
         itinerary.append(["agent_note", request.generated_plan.agent_note])
 
     buffer = BytesIO()
@@ -3141,14 +4513,17 @@ def _corporate_request_pdf_bytes(request: CorporateTravelRequest) -> bytes:
     plan = request.generated_plan
     traveler = request.traveller_details
     travel = request.travel_details
-    budget = request.budgets
+    final_total = _final_total_for_origin_currency(request)
+    final_total_display = f"{final_total[0]} {final_total[1]}" if final_total else "Pending"
     selected_flight = None
     selected_hotel = None
     selected_transfer = None
+    selected_option = None
     if plan:
         selected_flight = next((offer for offer in plan.flight_offers if offer.id == plan.selected_flight_offer_id), None)
         selected_hotel = next((offer for offer in plan.hotel_offers if offer.id == plan.selected_hotel_offer_id), None)
         selected_transfer = next((offer for offer in plan.ground_transfer_offers if offer.id == plan.selected_ground_transfer_offer_id), None)
+        selected_option = _selected_travel_option_for_request(request)
 
     pdf = _PdfPageBuilder()
     pdf.header(
@@ -3159,7 +4534,7 @@ def _corporate_request_pdf_bytes(request: CorporateTravelRequest) -> bytes:
     pdf.badge_row([
         ("Traveler", traveler.traveler_name or "Traveler pending"),
         ("Route", f"{travel.origin or 'Origin pending'} to {travel.destination or 'Destination pending'}"),
-        ("Budget", f"{budget.total_budget or 'Pending'} {budget.currency}"),
+        ("Final total", final_total_display),
     ])
     pdf.table("Traveler Details", [
         ("Name", traveler.traveler_name or "Traveler pending"),
@@ -3183,8 +4558,7 @@ def _corporate_request_pdf_bytes(request: CorporateTravelRequest) -> bytes:
             ("Visa", plan.travel_readiness.visa_status),
             ("Transit", plan.travel_readiness.transit_warning or "No transit warning"),
             ("Policy status", plan.budget_policy_check.policy_status),
-            ("Budget status", plan.budget_policy_check.budget_status),
-            ("Estimated cost", f"{plan.budget_policy_check.estimated_cost} {budget.currency}"),
+            ("Final total", final_total_display),
         ])
         if selected_flight:
             pdf.table("Selected Flight", [
@@ -3193,7 +4567,7 @@ def _corporate_request_pdf_bytes(request: CorporateTravelRequest) -> bytes:
                 ("Outbound departure / landing", selected_flight.outbound),
                 ("Return departure / landing", selected_flight.return_leg or "Not captured"),
                 ("Cabin", selected_flight.cabin),
-                ("Fare", f"{selected_flight.total_amount} {selected_flight.currency}"),
+                ("Fare", _origin_currency_component_display(selected_flight.total_amount, selected_flight.currency, request)),
             ])
         if selected_hotel:
             pdf.table("Selected Hotel", [
@@ -3206,11 +4580,11 @@ def _corporate_request_pdf_bytes(request: CorporateTravelRequest) -> bytes:
                 ("Rooms / guests", f"{selected_hotel.rooms} room(s), {selected_hotel.guests} guest(s)"),
                 ("Room notes", selected_hotel.room_notes or "Not captured"),
                 ("Cancellation", selected_hotel.cancellation_notes or "Must be verified before confirmation"),
-                ("Rate", f"{selected_hotel.total_amount} {selected_hotel.currency}"),
+                ("Rate", _origin_currency_component_display(selected_hotel.total_amount, selected_hotel.currency, request)),
             ])
         if selected_transfer:
             pdf.table("Airport Transfer", [
-                ("Cab service provider", selected_transfer.provider),
+                ("Cab service source", "Ground transport"),
                 ("Pickup airport", selected_transfer.pickup_airport_code),
                 ("Pickup time", selected_transfer.pickup_time or "Not captured"),
                 ("Dropoff", selected_transfer.dropoff_label),
@@ -3220,13 +4594,12 @@ def _corporate_request_pdf_bytes(request: CorporateTravelRequest) -> bytes:
                 ("Passengers", str(selected_transfer.passengers)),
                 ("Baggage", selected_transfer.baggage or "Not captured"),
                 ("Cancellation", selected_transfer.cancellation_notes or "Must be verified before confirmation"),
-                ("Rate", f"{selected_transfer.total_amount} {selected_transfer.currency}"),
+                ("Rate", _origin_currency_component_display(selected_transfer.total_amount, selected_transfer.currency, request)),
             ])
         pdf.note("Special Requests", _special_request_notice(request))
-        pdf.note("Client Note", mask_sensitive_customer_text(plan.customer_itinerary_draft))
+        pdf.note("Client Note", mask_sensitive_customer_text(_final_customer_itinerary_note(request, selected_option)))
     else:
         pdf.note("Recommended Travel Plan", "Plan not generated.")
-    pdf.footer_note("This itinerary is an agent-reviewed plan. It is not a ticket, hotel voucher, payment receipt, or booking confirmation.")
     return _styled_pdf(pdf.pages())
 
 
@@ -3239,26 +4612,21 @@ def _corporate_option_pdf_bytes(request: CorporateTravelRequest, option_index: i
     flight = next((offer for offer in plan.flight_offers if offer.id == option.flight_offer_id), None)
     hotel = plan.hotel_offers[index] if index < len(plan.hotel_offers) else None
     transfer = next((offer for offer in plan.ground_transfer_offers if offer.id == option.ground_transfer_offer_id), None)
+    final_total, final_currency = _origin_currency_amount(option.estimated_cost, request)
     lines = [
         f"Itinerary Option {index + 1}: {option.option_name}",
         f"Request: {request.id}",
         f"Traveller: {request.traveller_details.traveler_name or 'Traveller pending'}",
         f"Route: {request.travel_details.origin or 'Origin pending'} to {request.travel_details.destination or 'Destination pending'}",
         f"Dates: {request.travel_details.depart_date or 'Date pending'} to {request.travel_details.return_date or 'Return pending'}",
-        f"Flight: {flight.summary if flight else option.flight_summary}",
-        f"Hotel: {hotel.summary if hotel else option.hotel_summary}",
-        f"Transfer: {_corporate_option_transfer_text(transfer) if transfer else option.transfer_summary}",
-        f"Estimated cost: {option.estimated_cost} {request.budgets.currency or 'USD'}",
+        f"Flight: {_final_flight_summary(request, option, flight)}",
+        f"Hotel: {_final_hotel_summary(request, option, hotel)}",
+        f"Transfer: {_final_transfer_summary(request, option, transfer)}",
+        f"Final total: {final_total} {final_currency}",
         f"Policy fit: {option.policy_status}",
         f"Why this option: {option.recommendation_reason}",
-        "No booking, ticketing, hotel voucher, or payment has been created.",
     ]
     return _simple_pdf(lines)
-
-
-def _corporate_option_transfer_text(transfer: CorporateGroundTransferOffer) -> str:
-    pickup = f" pickup {transfer.pickup_time}" if transfer.pickup_time else ""
-    return f"{transfer.service_type} transfer from {transfer.pickup_airport_code} to {transfer.dropoff_label}{pickup}."
 
 
 def _selected_option_index(request: CorporateTravelRequest, approval: CorporateClientApprovalRequest) -> int:
@@ -3275,6 +4643,21 @@ def _selected_option_index(request: CorporateTravelRequest, approval: CorporateC
     return 0
 
 
+def _selected_travel_option_for_request(request: CorporateTravelRequest) -> TravelOption | None:
+    plan = request.generated_plan
+    if not plan or not plan.travel_options:
+        return None
+    if request.client_review and request.client_review.selected_option_index:
+        index = request.client_review.selected_option_index - 1
+        if 0 <= index < len(plan.travel_options):
+            return plan.travel_options[index]
+    selected_flight_id = plan.selected_flight_offer_id
+    for option in plan.travel_options:
+        if selected_flight_id and option.flight_offer_id == selected_flight_id:
+            return option
+    return plan.travel_options[0]
+
+
 def _customer_itinerary_from_selected_option(request: CorporateTravelRequest, option: TravelOption) -> str:
     plan = request.generated_plan
     flight = None
@@ -3285,15 +4668,16 @@ def _customer_itinerary_from_selected_option(request: CorporateTravelRequest, op
         flight = next((offer for offer in plan.flight_offers if offer.id == option.flight_offer_id), None)
         hotel = plan.hotel_offers[hotel_index] if hotel_index < len(plan.hotel_offers) else None
         transfer = next((offer for offer in plan.ground_transfer_offers if offer.id == option.ground_transfer_offer_id), None)
+    final_total, final_currency = _origin_currency_amount(option.estimated_cost, request)
     lines = [
         f"Approved itinerary for {request.traveller_details.traveler_name or 'traveller'}",
         f"Route: {request.travel_details.origin or 'Origin pending'} to {request.travel_details.destination or 'Destination pending'}",
         f"Dates: {request.travel_details.depart_date or 'Date pending'} to {request.travel_details.return_date or 'Return pending'}",
         f"Selected option: {option.option_name}",
-        f"Flight: {option.flight_summary}",
-        f"Hotel: {option.hotel_summary}",
-        f"Airport transfer: {option.transfer_summary}",
-        f"Estimated cost: {option.estimated_cost} {request.budgets.currency or 'USD'}",
+        f"Flight: {_final_flight_summary(request, option, flight)}",
+        f"Hotel: {_final_hotel_summary(request, option, hotel)}",
+        f"Airport transfer: {_final_transfer_summary(request, option, transfer)}",
+        f"Final total: {final_total} {final_currency}",
     ]
     if flight:
         lines.extend([
@@ -3310,14 +4694,13 @@ def _customer_itinerary_from_selected_option(request: CorporateTravelRequest, op
         ])
     if transfer:
         lines.extend([
-            f"Cab service provider: {transfer.provider}",
+            "Cab service source: Ground transport",
             f"Cab service: {transfer.service_type} / {transfer.vehicle_type or 'vehicle pending'}",
             f"Cab pickup: {transfer.pickup_airport_code} at {transfer.pickup_time or 'time pending'}",
             f"Cab dropoff: {transfer.dropoff_label} ({transfer.dropoff_address or 'address pending'})",
         ])
     lines.extend([
         _special_request_notice(request),
-        "No booking, ticketing, hotel voucher, or payment has been created.",
     ])
     return "\n".join(lines)
 
@@ -3487,37 +4870,145 @@ def _date_text(value: date | None) -> str:
     return value.isoformat() if value else "TBD"
 
 
-def _client_request_pdf_bytes() -> bytes:
-    lines = [
-        "Unipro Travel Operations",
-        "Client Travel Request Form",
-        "",
-        "Traveler matching",
-        "Name: ________________________________",
-        "Email: _______________________________",
-        "Employee ID: _________________________",
-        "",
-        "Trip details",
-        "Origin city / airport: _______________",
-        "Destination city / airport: __________",
-        "Destination country: __________________",
-        "Departure date: ______________________",
-        "Return date: _________________________",
-        "Include outbound flight: Yes / No",
-        "Include return flight: Yes / No",
-        "Include hotel: Yes / No",
-        "Travel purpose: ______________________",
-        "Meeting office / location: ____________",
-        "Flexible dates: Yes / No",
-        "",
-        "Budget and trip notes",
-        "Approved budget and currency: ________",
-        "Cabin: Economy / Premium / Business",
-        "Trip-specific requests: ______________",
-        "",
-        "Passport, visa, loyalty, seating, meal, and hotel preferences are pulled from the traveler roster.",
+def _client_request_form_lines() -> list[str]:
+    lines = ["Unipro Travel Operations", "Client Travel Request Form", ""]
+    for title, fields in _client_request_form_sections():
+        lines.extend([title, *fields, ""])
+    lines.append("Hotel tier is automatic from band: CEO 4/5-star, Manager 3/4-star, Employee 2/3-star.")
+    lines.append("Excel remains available as a backup import for operations teams.")
+    lines.append("Passport, visa, loyalty, seating, meal, and saved preferences are pulled from the traveler roster.")
+    return lines
+
+
+def _client_request_form_sections() -> list[tuple[str, list[str]]]:
+    return [
+        ("Traveler matching", [
+            "Traveller name: ________________________________",
+            "Employee band / role (CEO, Manager, Employee, or band 1/2/3): _______________________",
+        ]),
+        ("Trip details", [
+            "Origin city / airport: _______________",
+            "Destination city / airport: __________",
+            "Destination country: __________________",
+            "Departure date: ______________________",
+            "Return date: _________________________",
+            "Meeting office / location: ____________",
+            "Flexible dates: Yes / No",
+        ]),
+        ("Preferences and requests", [
+            "Flight preference: ___________________",
+            "Hotel area / location preference: ____",
+            "Airport transfer needed: Yes / No",
+            "Meal preference: _____________________",
+            "Trip-specific requests: ______________",
+        ]),
     ]
-    return _simple_pdf(lines)
+
+
+def _client_request_pdf_bytes() -> bytes:
+    return _simple_pdf(_client_request_form_lines())
+
+
+def _client_request_docx_bytes() -> bytes:
+    return _structured_request_docx()
+
+
+def _structured_request_docx() -> bytes:
+    document_xml = "\n".join([
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+        _docx_paragraph("Unipro Travel Operations", bold=True, size=34, color="174A5C", align="center"),
+        _docx_paragraph("Client Travel Request Form", bold=True, size=28, color="0F172A", align="center"),
+        _docx_paragraph("Fill the editable fields below. Hotel tier is automatic from band; Excel remains available as a backup import.", size=20, color="64748B", align="center"),
+        *[_docx_section(title, fields) for title, fields in _client_request_form_sections()],
+        _docx_paragraph("Roster note: Passport, visa, loyalty, seating, meal, and saved preferences are pulled from the traveler roster.", size=20, color="64748B"),
+        '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>',
+        "</w:body>",
+        "</w:document>",
+    ])
+    content_types = "\n".join([
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>',
+        "</Types>",
+    ])
+    relationships = "\n".join([
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>',
+        "</Relationships>",
+    ])
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
+
+
+def _docx_section(title: str, fields: list[str]) -> str:
+    rows = "\n".join(_docx_table_row(field) for field in fields)
+    return "\n".join([
+        _docx_paragraph(title, bold=True, size=24, color="174A5C"),
+        '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders>'
+        '<w:top w:val="single" w:sz="8" w:color="D6DEE3"/>'
+        '<w:left w:val="single" w:sz="8" w:color="D6DEE3"/>'
+        '<w:bottom w:val="single" w:sz="8" w:color="D6DEE3"/>'
+        '<w:right w:val="single" w:sz="8" w:color="D6DEE3"/>'
+        '<w:insideH w:val="single" w:sz="6" w:color="E5E7EB"/>'
+        '</w:tblBorders></w:tblPr>',
+        rows,
+        "</w:tbl>",
+        _docx_paragraph(""),
+    ])
+
+
+def _docx_table_row(field: str) -> str:
+    return "\n".join([
+        "<w:tr>",
+        '<w:tc><w:tcPr><w:tcW w:w="5000" w:type="pct"/><w:shd w:fill="F8FAFC"/></w:tcPr>',
+        _docx_field_paragraph(field, size=21, color="0F172A"),
+        "</w:tc>",
+        "</w:tr>",
+    ])
+
+
+def _docx_field_paragraph(line: str, *, size: int = 22, color: str | None = None) -> str:
+    if ":" not in line:
+        return _docx_paragraph(line, bold=True, size=size, color=color)
+    label, value = line.split(":", 1)
+    p_props = '<w:pPr><w:spacing w:after="120"/></w:pPr>'
+    label_props = "".join([
+        "<w:b/>",
+        f'<w:color w:val="{color}"/>' if color else "",
+        f'<w:sz w:val="{size}"/>',
+    ])
+    value_props = "".join([
+        f'<w:color w:val="{color}"/>' if color else "",
+        f'<w:sz w:val="{size}"/>',
+    ])
+    return "".join([
+        f"<w:p>{p_props}",
+        f'<w:r><w:rPr>{label_props}</w:rPr><w:t xml:space="preserve">{xml_escape(label)}:</w:t></w:r>',
+        f'<w:r><w:rPr>{value_props}</w:rPr><w:t xml:space="preserve">{xml_escape(value)}</w:t></w:r>',
+        "</w:p>",
+    ])
+
+
+def _docx_paragraph(line: str, *, bold: bool = False, size: int = 22, color: str | None = None, align: str | None = None) -> str:
+    if not line:
+        return "<w:p/>"
+    alignment = f'<w:jc w:val="{align}"/>' if align else ""
+    p_props = f'<w:pPr>{alignment}<w:spacing w:after="120"/></w:pPr>'
+    r_props = "".join([
+        "<w:b/>" if bold else "",
+        f'<w:color w:val="{color}"/>' if color else "",
+        f'<w:sz w:val="{size}"/>',
+    ])
+    return f'<w:p>{p_props}<w:r><w:rPr>{r_props}</w:rPr><w:t xml:space="preserve">{xml_escape(line)}</w:t></w:r></w:p>'
 
 
 def _simple_pdf(lines: list[str]) -> bytes:
@@ -3556,16 +5047,36 @@ def _pdf_escape(value: str) -> str:
 
 def _corporate_request_from_row(row: dict[str, object], context: AuthContext, now: datetime) -> CorporateTravelRequest:
     special = row.get("special_requests") or row.get("special_request") or ""
+    travel_details = {
+        "origin": _str(row, "origin", "from"),
+        "destination": _str(row, "destination", "to"),
+        "destination_country": _str(row, "destination_country", "country"),
+        "depart_date": _date_value(row.get("depart_date") or row.get("departure_date")),
+        "return_date": _date_value(row.get("return_date")),
+        "trip_purpose": _str(row, "trip_purpose", "purpose"),
+        "meeting_location": _str(row, "meeting_location"),
+        "flexible_dates": _bool_value(row.get("flexible_dates")),
+        "include_outbound_flight": _component_bool(row, "include_outbound_flight", "outbound_flight_needed", "origin_flight_needed", default=True),
+        "include_return_flight": _component_bool(row, "include_return_flight", "return_flight_needed", default=True),
+        "include_hotel": _component_bool(row, "include_hotel", "hotel_needed", "book_hotel", "hotel_required", default=True),
+        "include_ground_transfer": _component_bool(row, "include_ground_transfer", "ground_transfer_needed", "airport_transfer_needed", "cab_needed", default=True),
+        "travelers": _int_value(row.get("travelers") or row.get("travellers") or 1, default=1),
+    }
+    submitted_cabin = _str(row, "cabin")
+    if submitted_cabin:
+        travel_details["cabin"] = _cabin_value(submitted_cabin)
     return CorporateTravelRequest(
         owner_id=context.user_id,
         owner_department=context.department,
         status="New",
+        requester_email=_str(row, "requester_email", "sender_email", "submitter_email"),
         traveller_details=TravellerDetails(
             traveler_name=_str(row, "traveler_name", "traveller_name", "name"),
             traveler_email=_str(row, "traveler_email", "traveller_email", "email"),
             phone=_str(row, "phone", "phone_number", "mobile"),
             employee_id=_str(row, "employee_id"),
-            employee_level=_str(row, "employee_level", "level"),
+            employee_level=_str(row, "employee_band", "traveler_band", "traveller_band", "band", "employee_level", "level"),
+            employee_band=_str(row, "employee_band", "traveler_band", "traveller_band", "band"),
             department=_str(row, "department"),
             nationality=_str(row, "nationality", "citizenship"),
             passport_number=_str(row, "passport_number"),
@@ -3576,27 +5087,14 @@ def _corporate_request_from_row(row: dict[str, object], context: AuthContext, no
             accessibility_notes=_str(row, "accessibility_notes"),
         ),
         company_details=CompanyDetails(
-            company_name=_str(row, "company_name"),
+            company_name=_company_name_from_request_row(row),
             cost_center=_str(row, "cost_center"),
             approving_manager=_str(row, "approving_manager", "manager"),
             approval_manager_email=_str(row, "approval_manager_email", "approving_manager_email", "manager_email"),
-            policy_tier=_str(row, "policy_tier"),
+            approval_band=_str(row, "approval_band", "approver_band"),
+            policy_tier=_str(row, "policy_tier", "approval_band", "employee_band"),
         ),
-        travel_details=TravelDetails(
-            origin=_str(row, "origin", "from"),
-            destination=_str(row, "destination", "to"),
-            destination_country=_str(row, "destination_country", "country"),
-            depart_date=_date_value(row.get("depart_date") or row.get("departure_date")),
-            return_date=_date_value(row.get("return_date")),
-            trip_purpose=_str(row, "trip_purpose", "purpose"),
-            meeting_location=_str(row, "meeting_location"),
-            flexible_dates=_bool_value(row.get("flexible_dates")),
-            include_outbound_flight=_component_bool(row, "include_outbound_flight", "outbound_flight_needed", "origin_flight_needed", default=True),
-            include_return_flight=_component_bool(row, "include_return_flight", "return_flight_needed", default=True),
-            include_hotel=_component_bool(row, "include_hotel", "hotel_needed", "book_hotel", "hotel_required", default=True),
-            travelers=_int_value(row.get("travelers") or row.get("travellers") or 1, default=1),
-            cabin=_cabin_value(row.get("cabin")),
-        ),
+        travel_details=TravelDetails(**travel_details),
         preferences=TravelPreferences(
             preferred_airline=_str(row, "preferred_airline"),
             flight_preference=_str(row, "flight_preference"),
@@ -3611,7 +5109,10 @@ def _corporate_request_from_row(row: dict[str, object], context: AuthContext, no
         ),
         budgets=TravelBudget(
             total_budget=_optional_int(row.get("total_budget") or row.get("budget_usd") or row.get("budget")),
-            currency=_str(row, "currency") or "USD",
+            currency=_str(row, "currency") or origin_city_currency(str(travel_details.get("origin") or ""), "USD"),
+            daily_budget=_optional_int(row.get("daily_budget") or row.get("per_day_budget") or row.get("daily_allowance")),
+            flight_budget_per_hour=_optional_int(row.get("flight_budget_per_hour") or row.get("flight_hourly_budget")),
+            estimated_flight_hours=_optional_int(row.get("estimated_flight_hours") or row.get("flight_hours")),
             max_flight_budget=_optional_int(row.get("max_flight_budget")),
             max_hotel_budget=_optional_int(row.get("max_hotel_budget")),
             policy_notes=_str(row, "policy_notes"),
@@ -3620,6 +5121,12 @@ def _corporate_request_from_row(row: dict[str, object], context: AuthContext, no
         special_requests=[item.strip() for item in str(special).replace(";", ",").split(",") if item and item.strip()],
         created_at=now,
         updated_at=now,
+    )
+
+
+def _company_name_from_request_row(row: dict[str, object]) -> str | None:
+    return _str(row, "company_name") or _company_from_email(
+        _str(row, "requester_email", "sender_email", "submitter_email", "traveler_email", "traveller_email", "email", "employee_email")
     )
 
 

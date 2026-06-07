@@ -19,6 +19,85 @@ PLANNING_RATES: dict[SupportedCurrency, float] = {
     "JPY": 155.0,
     "ZAR": 18.2,
 }
+FINAL_RATE_VARIANCE_LIMIT = 0.10
+
+ORIGIN_CURRENCY_BY_LOCATION: dict[str, SupportedCurrency] = {
+    "bangalore": "INR",
+    "bengaluru": "INR",
+    "blr": "INR",
+    "hyderabad": "INR",
+    "hyd": "INR",
+    "mumbai": "INR",
+    "bom": "INR",
+    "delhi": "INR",
+    "del": "INR",
+    "johannesburg": "ZAR",
+    "jnb": "ZAR",
+    "london": "GBP",
+    "lhr": "GBP",
+    "san francisco": "USD",
+    "sfo": "USD",
+    "san jose": "USD",
+    "sjc": "USD",
+    "new york": "USD",
+    "jfk": "USD",
+    "newark": "USD",
+    "ewr": "USD",
+    "berlin": "EUR",
+    "ber": "EUR",
+    "tokyo": "JPY",
+    "hnd": "JPY",
+    "nrt": "JPY",
+    "toronto": "CAD",
+    "yyz": "CAD",
+    "sydney": "AUD",
+    "syd": "AUD",
+    "melbourne": "AUD",
+    "mel": "AUD",
+}
+
+
+def origin_city_currency(origin: str | None, fallback: str = "USD") -> SupportedCurrency:
+    key = _location_key(origin)
+    mapped = ORIGIN_CURRENCY_BY_LOCATION.get(key)
+    if mapped:
+        return mapped
+    candidate = fallback.upper()
+    if candidate in PLANNING_RATES:
+        return candidate  # type: ignore[return-value]
+    return "USD"
+
+
+def convert_planning_amount(amount: int, from_currency: str, to_currency: SupportedCurrency) -> int:
+    source = from_currency.upper()
+    if source == to_currency:
+        return int(amount)
+    source_rate = PLANNING_RATES.get(source)  # type: ignore[arg-type]
+    target_rate = PLANNING_RATES[to_currency]
+    if not source_rate:
+        return int(amount)
+    amount_usd = amount / source_rate
+    return int(round(amount_usd * target_rate))
+
+
+def convert_final_amount(amount: int, from_currency: str, to_currency: SupportedCurrency) -> CurrencyConversionResponse:
+    source = from_currency.upper()
+    planning_amount = convert_planning_amount(amount, source, to_currency)
+    if source == to_currency:
+        return _converted_amount_response(planning_amount, to_currency, 1.0, "planning_rate")
+    source_rate = PLANNING_RATES.get(source)  # type: ignore[arg-type]
+    if not source_rate:
+        return _converted_amount_response(planning_amount, to_currency, 1.0, "planning_rate")
+    amount_usd = int(round(amount / source_rate))
+    live_amount = convert_from_usd(max(amount_usd, 0), to_currency)
+    if _rate_variance_is_acceptable(live_amount.amount, planning_amount):
+        return live_amount
+    planning_rate = PLANNING_RATES[to_currency] / source_rate
+    return _converted_amount_response(planning_amount, to_currency, planning_rate, "planning_rate")
+
+
+def format_currency_amount(value: float, currency: SupportedCurrency) -> str:
+    return _format_money(value, currency)
 
 
 def convert_from_usd(amount_usd: int, to_currency: SupportedCurrency) -> CurrencyConversionResponse:
@@ -130,13 +209,23 @@ def _write_rate_cache(payload: dict[str, Any]) -> None:
 
 def _response(amount_usd: int, currency: SupportedCurrency, rate: float, source: str) -> CurrencyConversionResponse:
     converted = amount_usd * rate
+    return _converted_amount_response(converted, currency, rate, source)
+
+
+def _converted_amount_response(value: float, currency: SupportedCurrency, rate: float, source: str) -> CurrencyConversionResponse:
     return CurrencyConversionResponse(
-        amount=round(converted, 2),
+        amount=round(value, 2),
         currency=currency,
         rate=round(rate, 6),
-        display=_format_money(converted, currency),
+        display=_format_money(value, currency),
         source=source,  # type: ignore[arg-type]
     )
+
+
+def _rate_variance_is_acceptable(live_amount: float, planning_amount: int) -> bool:
+    if planning_amount <= 0:
+        return True
+    return abs(live_amount - planning_amount) / planning_amount <= FINAL_RATE_VARIANCE_LIMIT
 
 
 def _number(value: Any) -> float | None:
@@ -150,3 +239,7 @@ def _format_money(value: float, currency: SupportedCurrency) -> str:
     symbols = {"USD": "$", "INR": "₹", "EUR": "€", "GBP": "£", "CAD": "C$", "AUD": "A$", "JPY": "¥", "ZAR": "R"}
     digits = 0 if currency in {"JPY", "INR"} else 2
     return f"{symbols[currency]}{value:,.{digits}f}"
+
+
+def _location_key(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().replace(".", " ").split())
