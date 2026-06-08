@@ -138,6 +138,14 @@ class TravelStore:
                 """
             )
 
+            # Performance optimization: Indexes for frequent list and filter queries
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_created_at ON corporate_requests(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_owner_id ON corporate_requests(owner_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_created_at ON trips(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner_id ON trips(owner_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_request_id ON email_events(request_id)")
+
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:

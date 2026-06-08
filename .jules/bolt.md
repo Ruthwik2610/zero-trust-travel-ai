@@ -1,0 +1,3 @@
+## 2024-06-08 - Add Missing Database Indexes
+**Learning:** The application queries the `corporate_requests`, `trips`, `audit_events`, and `email_events` tables using `ORDER BY created_at DESC` or `WHERE owner_id/request_id` filters. Without explicitly created indexes, SQLite performs full table scans `O(N)` for these operations, resulting in degraded performance for high-volume endpoints (like `/api/corporate/requests` or `/api/admin/audit`).
+**Action:** When implementing database stores or creating schema definitions, proactively add indexes on fields commonly used for sorting (like `created_at`) or filtering/joins (like `owner_id`, `request_id`) to ensure `O(log N)` lookup times.
