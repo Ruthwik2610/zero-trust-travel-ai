@@ -1090,6 +1090,7 @@ export function TravelerDashboard() {
             onDelete={(id) => void deleteRequest(id)}
             deletingId={deletingRequestId}
             onRefresh={() => void refreshRequests()}
+            isRefreshing={loadState === "loading"}
             onSearchChange={setSearchQuery}
             onQueueFilterChange={setQueueFilter}
           />
@@ -1112,7 +1113,8 @@ function RequestQueue({
   deletingId,
   onRefresh,
   onSearchChange,
-  onQueueFilterChange
+  onQueueFilterChange,
+  isRefreshing
 }: {
   allRequests: CorporateTravelRequest[];
   requests: CorporateTravelRequest[];
@@ -1126,6 +1128,7 @@ function RequestQueue({
   onRefresh: () => void;
   onSearchChange: (value: string) => void;
   onQueueFilterChange: (value: QueueFilter) => void;
+  isRefreshing?: boolean;
 }) {
   const [issueStatus, setIssueStatus] = useState("");
   const [workingIssueId, setWorkingIssueId] = useState("");
@@ -1184,7 +1187,7 @@ function RequestQueue({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </label>
-          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
+          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh} disabled={isRefreshing}><RefreshCw className={isRefreshing ? "spin-icon" : ""} size={16} /></button>
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
@@ -2691,7 +2694,7 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
             <>
               {pendingAction === "edits" ? (
                 <section className="client-review-loading" aria-label="Updating itinerary options">
-                  <RefreshCw size={18} />
+                  <RefreshCw className="spin-icon" size={18} />
                   <span>Updating itinerary options...</span>
                 </section>
               ) : null}
