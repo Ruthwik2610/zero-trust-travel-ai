@@ -1,0 +1,3 @@
+## 2024-05-24 - Missing SQLite Indexes for Frequently Queried Columns
+**Learning:** The backend heavily relies on SQLite and performs operations on specific tables (e.g., trips, email_events) matching constraints like `owner_id` or `request_id` and sorting them by `created_at` or `updated_at`. Since these were lacking explicit indexes, SQLite was forced to perform full table scans for these SELECTs.
+**Action:** When adding database tables or making query optimizations in `backend/app/store.py`, ensure proper `CREATE INDEX` statements are included in `_init_schema` for frequently queried fields like foreign keys and timestamps.
