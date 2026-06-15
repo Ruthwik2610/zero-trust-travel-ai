@@ -1089,6 +1089,7 @@ export function TravelerDashboard() {
             onCriticalIssue={(id, issue, status) => void markCriticalIssue(id, issue, status)}
             onDelete={(id) => void deleteRequest(id)}
             deletingId={deletingRequestId}
+            isRefreshing={loadState === "loading"}
             onRefresh={() => void refreshRequests()}
             onSearchChange={setSearchQuery}
             onQueueFilterChange={setQueueFilter}
@@ -1110,6 +1111,7 @@ function RequestQueue({
   onCriticalIssue,
   onDelete,
   deletingId,
+  isRefreshing,
   onRefresh,
   onSearchChange,
   onQueueFilterChange
@@ -1123,6 +1125,7 @@ function RequestQueue({
   onCriticalIssue: (id: string, issue: string, status?: CorporateTravelRequest["criticalIssueStatus"]) => Promise<void> | void;
   onDelete: (id: string) => Promise<void> | void;
   deletingId: string;
+  isRefreshing?: boolean;
   onRefresh: () => void;
   onSearchChange: (value: string) => void;
   onQueueFilterChange: (value: QueueFilter) => void;
@@ -1184,7 +1187,7 @@ function RequestQueue({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </label>
-          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
+          <button aria-label="Refresh requests" className="icon-button" type="button" disabled={isRefreshing} onClick={onRefresh}><RefreshCw size={16} className={isRefreshing ? "spin-icon" : ""} /></button>
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
@@ -2691,7 +2694,7 @@ export function ClientReviewPortalScreen({ token }: { token: string }) {
             <>
               {pendingAction === "edits" ? (
                 <section className="client-review-loading" aria-label="Updating itinerary options">
-                  <RefreshCw size={18} />
+                  <RefreshCw size={18} className="spin-icon" />
                   <span>Updating itinerary options...</span>
                 </section>
               ) : null}
