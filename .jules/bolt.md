@@ -1,0 +1,3 @@
+## 2024-06-25 - Missing Indexes in Raw SQLite Schema
+**Learning:** This codebase manages its SQLite schema natively in Python strings without an ORM. While this is simple, it resulted in a total absence of database indexes for heavily queried fields like foreign keys (`owner_id`) and sorted timestamps (`created_at`). As row counts scale, this forces O(N) full table scans instead of efficient O(log N) lookups, causing silent performance degradation.
+**Action:** Always verify that frequently queried, filtered, or ordered relational fields have explicit `CREATE INDEX` statements when building or modifying manual raw SQL schema initialization files.
