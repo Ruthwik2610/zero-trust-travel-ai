@@ -1,0 +1,3 @@
+## 2024-06-26 - Missing Database Indexes for Sorting and Filtering
+**Learning:** The application uses raw SQLite queries to fetch rows from tables like `trips`, `corporate_requests`, and `audit_events`. These queries use `ORDER BY created_at DESC` and `WHERE owner_id = ?` without any pagination (`LIMIT`). Because SQLite executes these synchronously, the absence of indexes causes full table scans (O(N)) and temporary B-Tree sorts (O(N log N)). As the dataset grows, this could significantly block the backend main thread.
+**Action:** Always verify that proper `CREATE INDEX` statements exist for fields used in `WHERE` and `ORDER BY` clauses within `backend/app/store.py`'s `_init_schema()`, especially for frequently queried combinations like `(owner_id, created_at DESC)`.
