@@ -1014,7 +1014,7 @@ export function TravelerDashboard() {
           ) : null}
           {selectedRequest ? (
             <button className="secondary-button danger-button" type="button" disabled={deletingRequestId === selectedRequest.id} onClick={() => void deleteRequest(selectedRequest.id)}>
-              <Trash2 size={16} /> {deletingRequestId === selectedRequest.id ? "Deleting..." : "Delete Request"}
+              {deletingRequestId === selectedRequest.id ? <RefreshCw className="spin-icon" size={16} /> : <Trash2 size={16} />} {deletingRequestId === selectedRequest.id ? "Deleting..." : "Delete Request"}
             </button>
           ) : null}
           {!showRequestForm ? (
@@ -1033,7 +1033,7 @@ export function TravelerDashboard() {
                 />
               </label>
               <button className="secondary-button" type="button" disabled={!formUploadFile || uploadingForms} onClick={() => void uploadTravelForms()}>
-                {uploadingForms ? "Importing..." : "Import Forms"}
+                {uploadingForms ? <><RefreshCw className="spin-icon" size={16} /> Importing...</> : "Import Forms"}
               </button>
               <button className="primary-button" type="button" onClick={() => {
                 setCreateStatus("");
@@ -1287,7 +1287,7 @@ function RequestQueue({
                       disabled={deletingId === request.id}
                       onClick={() => onDelete(request.id)}
                     >
-                      <Trash2 size={14} /> {deletingId === request.id ? "Deleting..." : "Delete"}
+                      {deletingId === request.id ? <RefreshCw className="spin-icon" size={14} /> : <Trash2 size={14} />} {deletingId === request.id ? "Deleting..." : "Delete"}
                     </button>
                   </div>
                 </td>
@@ -1429,7 +1429,9 @@ function TravelRequestForm({
       {formStatus ? <p className="form-status" role="status">{formStatus}</p> : null}
       <div className="button-row">
         {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
-        <button className="primary-button" type="submit" disabled={submitting}><ClipboardCheck size={16} /> {submitting ? "Creating..." : submitLabel}</button>
+        <button className="primary-button" type="submit" disabled={submitting}>
+          {submitting ? <RefreshCw className="spin-icon" size={16} /> : <ClipboardCheck size={16} />} {submitting ? "Creating..." : submitLabel}
+        </button>
       </div>
     </form>
   );
@@ -2187,7 +2189,7 @@ function BuilderCommand({
       />
       <button className="secondary-button" type="button" onClick={onHelp}><MessageSquare size={16} /> Help me understand</button>
       <button className="primary-button" type="submit" disabled={assistantStatus === "responding"}>
-        {assistantStatus === "responding" ? "Updating..." : "Update Step"}
+        {assistantStatus === "responding" ? <><RefreshCw className="spin-icon" size={16} /> Updating...</> : "Update Step"}
       </button>
     </form>
   );
@@ -3359,7 +3361,7 @@ export function TripPlannerScreen() {
                           onClick={() => void generatePlan(request.id)}
                           disabled={workingId === request.id}
                         >
-                          {workingId === request.id ? "Generating..." : "Generate Plan"}
+                          {workingId === request.id ? <><RefreshCw className="spin-icon" size={14} /> Generating...</> : "Generate Plan"}
                         </button>
                         <Link className="ticket-action-link" href={`/itineraries/${request.id}`}>Open Builder</Link>
                         <button
@@ -3369,7 +3371,7 @@ export function TripPlannerScreen() {
                           onClick={() => void deleteItinerary(request.id)}
                           disabled={deletingId === request.id}
                         >
-                          <Trash2 size={14} /> {deletingId === request.id ? "Deleting..." : "Delete"}
+                          {deletingId === request.id ? <RefreshCw className="spin-icon" size={14} /> : <Trash2 size={14} />} {deletingId === request.id ? "Deleting..." : "Delete"}
                         </button>
                       </div>
                     </td>

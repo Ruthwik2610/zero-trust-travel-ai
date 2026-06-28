@@ -1,0 +1,3 @@
+## 2024-06-28 - Loading spinners for destructive and async agent actions
+**Learning:** Adding the `.spin-icon` to `<RefreshCw>` works very well as a universal, visually consistent loading indicator for both destructive actions (like Delete) and data-loading actions (like Generating and Importing). This codebase uses the label text to change state (e.g., from "Delete" to "Deleting...") but often left the static icon, which was slightly jarring.
+**Action:** Use conditional icon rendering (e.g. `{submitting ? <RefreshCw className="spin-icon" size={16} /> : <Trash2 size={16} />}`) to bind visual feedback tightly to state changes. Be careful to ensure the correct `size` prop matches the original icon to avoid visual layout shifts.
