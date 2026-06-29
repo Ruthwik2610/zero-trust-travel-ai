@@ -1092,6 +1092,7 @@ export function TravelerDashboard() {
             onRefresh={() => void refreshRequests()}
             onSearchChange={setSearchQuery}
             onQueueFilterChange={setQueueFilter}
+            isRefreshing={loadState === "loading"}
           />
           {loadState === "error" ? <section className="empty-panel">Requests are unavailable.</section> : null}
         </section>
@@ -1112,7 +1113,8 @@ function RequestQueue({
   deletingId,
   onRefresh,
   onSearchChange,
-  onQueueFilterChange
+  onQueueFilterChange,
+  isRefreshing
 }: {
   allRequests: CorporateTravelRequest[];
   requests: CorporateTravelRequest[];
@@ -1126,6 +1128,7 @@ function RequestQueue({
   onRefresh: () => void;
   onSearchChange: (value: string) => void;
   onQueueFilterChange: (value: QueueFilter) => void;
+  isRefreshing?: boolean;
 }) {
   const [issueStatus, setIssueStatus] = useState("");
   const [workingIssueId, setWorkingIssueId] = useState("");
@@ -1184,7 +1187,9 @@ function RequestQueue({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </label>
-          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
+          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh} disabled={isRefreshing}>
+            <RefreshCw size={16} className={isRefreshing ? "spin-icon" : ""} />
+          </button>
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
