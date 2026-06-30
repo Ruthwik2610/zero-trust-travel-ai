@@ -1090,6 +1090,7 @@ export function TravelerDashboard() {
             onDelete={(id) => void deleteRequest(id)}
             deletingId={deletingRequestId}
             onRefresh={() => void refreshRequests()}
+            isRefreshing={loadState === "loading"}
             onSearchChange={setSearchQuery}
             onQueueFilterChange={setQueueFilter}
           />
@@ -1111,6 +1112,7 @@ function RequestQueue({
   onDelete,
   deletingId,
   onRefresh,
+  isRefreshing,
   onSearchChange,
   onQueueFilterChange
 }: {
@@ -1126,6 +1128,7 @@ function RequestQueue({
   onRefresh: () => void;
   onSearchChange: (value: string) => void;
   onQueueFilterChange: (value: QueueFilter) => void;
+  isRefreshing: boolean;
 }) {
   const [issueStatus, setIssueStatus] = useState("");
   const [workingIssueId, setWorkingIssueId] = useState("");
@@ -1184,12 +1187,12 @@ function RequestQueue({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </label>
-          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
+          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh} disabled={isRefreshing}><RefreshCw size={16} className={isRefreshing ? "spin-icon" : ""} /></button>
         </div>
       </div>
-      <div className="queue-tabs" aria-label="Request status tabs">
+      <div className="queue-tabs" aria-label="Request status tabs" role="tablist">
         {filters.map((filter) => (
-          <button className={queueFilter === filter.value ? "active" : ""} key={filter.value} type="button" onClick={() => onQueueFilterChange(filter.value)}>
+          <button className={queueFilter === filter.value ? "active" : ""} key={filter.value} type="button" onClick={() => onQueueFilterChange(filter.value)} role="tab" aria-selected={queueFilter === filter.value}>
             {filter.label} <span>{counts[filter.value]}</span>
           </button>
         ))}
