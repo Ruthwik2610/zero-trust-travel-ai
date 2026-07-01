@@ -1090,6 +1090,7 @@ export function TravelerDashboard() {
             onDelete={(id) => void deleteRequest(id)}
             deletingId={deletingRequestId}
             onRefresh={() => void refreshRequests()}
+            isRefreshing={loadState === "loading"}
             onSearchChange={setSearchQuery}
             onQueueFilterChange={setQueueFilter}
           />
@@ -1111,6 +1112,7 @@ function RequestQueue({
   onDelete,
   deletingId,
   onRefresh,
+  isRefreshing,
   onSearchChange,
   onQueueFilterChange
 }: {
@@ -1124,6 +1126,7 @@ function RequestQueue({
   onDelete: (id: string) => Promise<void> | void;
   deletingId: string;
   onRefresh: () => void;
+  isRefreshing?: boolean;
   onSearchChange: (value: string) => void;
   onQueueFilterChange: (value: QueueFilter) => void;
 }) {
@@ -1184,7 +1187,7 @@ function RequestQueue({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </label>
-          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh}><RefreshCw size={16} /></button>
+          <button aria-label="Refresh requests" className="icon-button" type="button" onClick={onRefresh} disabled={isRefreshing}><RefreshCw className={isRefreshing ? "spin-icon" : ""} size={16} /></button>
         </div>
       </div>
       <div className="queue-tabs" aria-label="Request status tabs">
