@@ -58,6 +58,8 @@ class TravelStore:
             self._ensure_column(conn, "trips", "owner_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "trips", "owner_department", "TEXT NOT NULL DEFAULT 'general'")
             self._ensure_column(conn, "trips", "sensitive_payload_json", "TEXT NOT NULL DEFAULT ''")
+            # Bolt: Optimize trip lookups by owner and recency
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner_created ON trips (owner_id, created_at DESC)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -88,6 +90,8 @@ class TravelStore:
                 )
                 """
             )
+            # Bolt: Optimize corporate requests lookups by owner and recency
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_owner_created ON corporate_requests (owner_id, created_at DESC)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS corporate_reference_data (
