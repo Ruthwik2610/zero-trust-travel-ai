@@ -138,6 +138,20 @@ class TravelStore:
                 """
             )
 
+            # Bolt: Optimize queries with indexes for frequently accessed and ordered fields
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner ON trips(owner_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_created ON trips(created_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_req_owner ON corporate_requests(owner_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_req_created ON corporate_requests(created_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_ref_kind ON corporate_reference_data(kind);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_travelers_updated ON travelers(updated_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_updated ON policy_groups(updated_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_act_policy ON policy_activity_events(policy_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_act_created ON policy_activity_events(created_at DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_req ON email_events(request_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_created ON email_events(created_at DESC);")
+
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:

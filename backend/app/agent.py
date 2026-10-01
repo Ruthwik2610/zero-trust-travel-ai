@@ -926,7 +926,7 @@ def _corporate_hotel_offers(request: CorporateTravelRequest, live_offers: list[O
             CorporateHotelOffer(
                 id=f"hotel_synthetic_office_{uuid_suffix(destination, area, 'office')}",
                 provider="synthetic-booking/office",
-                name=f"Office Proximity Hotel",
+                name="Office Proximity Hotel",
                 summary="Prioritizes commute simplicity and meeting-day reliability.",
                 total_amount=max(int(round(base_display * 1.08)), 1),
                 currency=display_currency,
@@ -949,7 +949,7 @@ def _corporate_hotel_offers(request: CorporateTravelRequest, live_offers: list[O
             CorporateHotelOffer(
                 id=f"hotel_synthetic_flex_{uuid_suffix(destination, area, 'flex')}",
                 provider="synthetic-booking/flexible",
-                name=f"Flexible Corporate Stay",
+                name="Flexible Corporate Stay",
                 summary="Higher buffer option with stronger cancellation flexibility for disruption recovery.",
                 total_amount=max(int(round(base_display * 1.18)), 1),
                 currency=display_currency,

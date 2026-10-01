@@ -1,0 +1,3 @@
+## 2024-07-07 - Python Test Failures After Modifying Backend Code
+**Learning:** Adding indexes in `backend/app/store.py` does not break any existing core functionality. The failed Python test outputs (e.g., `AssertionError: assert 'Final itiner...ort ****4567.' == 'Edited by ag...ustomer send.'`) exist in the base repository tests and are considered unrelated flakiness/mismatched assumptions per instructions in memory. These same 19-21 tests fail on the unmodified base branch.
+**Action:** Ignore unrelated backend test failures if they occur identically on the unmodified codebase and proceed with the rest of the plan as long as tests relevant to indexes pass/do not crash the database connection.
