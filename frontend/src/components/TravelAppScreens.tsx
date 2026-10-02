@@ -805,7 +805,7 @@ export function LoginScreen() {
         </label>
         {status === "error" ? <p className="inline-error">Sign in is unavailable. Please try again after a moment.</p> : null}
         <button className="primary-button" disabled={status === "signing-in"} type="submit">
-          {status === "signing-in" ? "Opening workspace..." : <>Continue to workspace <ArrowRight size={19} /></>}
+          {status === "signing-in" ? <><RefreshCw className="spin-icon" size={16} /> Opening workspace...</> : <>Continue to workspace <ArrowRight size={19} /></>}
         </button>
       </form>
     </main>
@@ -1429,7 +1429,7 @@ function TravelRequestForm({
       {formStatus ? <p className="form-status" role="status">{formStatus}</p> : null}
       <div className="button-row">
         {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
-        <button className="primary-button" type="submit" disabled={submitting}><ClipboardCheck size={16} /> {submitting ? "Creating..." : submitLabel}</button>
+        <button className="primary-button" type="submit" disabled={submitting}>{submitting ? <RefreshCw className="spin-icon" size={16} /> : <ClipboardCheck size={16} />} {submitting ? "Creating..." : submitLabel}</button>
       </div>
     </form>
   );
@@ -4449,7 +4449,7 @@ export function AdminDashboard() {
             <input type="file" accept=".xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] || null)} />
           </label>
           <button className="primary-button" type="button" disabled={!uploadFile || status === "uploading"} onClick={() => void uploadFileToBackend()}>
-            {status === "uploading" ? "Uploading..." : "Import Workbook"}
+            {status === "uploading" ? <><RefreshCw className="spin-icon" size={16} /> Uploading...</> : "Import Workbook"}
           </button>
           {uploadResult ? (
             <div className="upload-result" role="status">
@@ -4476,7 +4476,7 @@ export function AdminDashboard() {
             <input aria-label="Select policy PDF" type="file" accept=".pdf,application/pdf" onChange={(event) => setPolicyFile(event.target.files?.[0] || null)} />
           </label>
           <button className="primary-button" type="button" disabled={!policyFile || policyStatus === "uploading"} onClick={() => void uploadPolicyPdfToBackend()}>
-            {policyStatus === "uploading" ? "Uploading..." : "Import Policy PDF"}
+            {policyStatus === "uploading" ? <><RefreshCw className="spin-icon" size={16} /> Uploading...</> : "Import Policy PDF"}
           </button>
           {policyResult ? (
             <div className="upload-result" role="status">
