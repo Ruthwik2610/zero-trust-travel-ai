@@ -795,17 +795,17 @@ export function LoginScreen() {
           <h2>Demo Access</h2>
           <p>Sign in to the travel agent workspace</p>
         </div>
-        <label>
+        <label htmlFor="login-username">
           <span>Username</span>
-          <span className="input-with-icon login-credential-field"><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /><User size={18} /></span>
+          <span className="input-with-icon login-credential-field"><input id="login-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={status === "signing-in"} required /><User size={18} /></span>
         </label>
-        <label>
+        <label htmlFor="login-password">
           <span>Password</span>
-          <span className="input-with-icon login-credential-field"><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /><Lock size={18} /></span>
+          <span className="input-with-icon login-credential-field"><input id="login-password" autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={status === "signing-in"} required /><Lock size={18} /></span>
         </label>
         {status === "error" ? <p className="inline-error">Sign in is unavailable. Please try again after a moment.</p> : null}
         <button className="primary-button" disabled={status === "signing-in"} type="submit">
-          {status === "signing-in" ? "Opening workspace..." : <>Continue to workspace <ArrowRight size={19} /></>}
+          {status === "signing-in" ? <><RefreshCw className="spin-icon" size={19} /> Opening workspace...</> : <>Continue to workspace <ArrowRight size={19} /></>}
         </button>
       </form>
     </main>
