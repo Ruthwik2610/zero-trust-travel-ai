@@ -4800,7 +4800,7 @@ def _styled_pdf(streams: list[str]) -> bytes:
     ]
     for index, stream_text in enumerate(streams):
         content_id = 4 + index * 2
-        page_id = 5 + index * 2
+        _page_id = 5 + index * 2
         stream = stream_text.encode("utf-8")
         objects.append(b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream")
         objects.append(
