@@ -138,6 +138,17 @@ class TravelStore:
                 """
             )
 
+            # Performance: Add database indexes on frequently queried fields to prevent full table scans.
+            # Measures: Reduces O(N) full table scans to O(log N) for targeted lookups (e.g., owner_id, request_id, created_at)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner ON trips(owner_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_created ON trips(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_owner ON corporate_requests(owner_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_created ON corporate_requests(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_reference_data_kind ON corporate_reference_data(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_request ON email_events(request_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_created ON email_events(created_at)")
+
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:
