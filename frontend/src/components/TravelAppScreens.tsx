@@ -805,7 +805,7 @@ export function LoginScreen() {
         </label>
         {status === "error" ? <p className="inline-error">Sign in is unavailable. Please try again after a moment.</p> : null}
         <button className="primary-button" disabled={status === "signing-in"} type="submit">
-          {status === "signing-in" ? "Opening workspace..." : <>Continue to workspace <ArrowRight size={19} /></>}
+          {status === "signing-in" ? <><RefreshCw className="spin-icon" size={19} /> Opening workspace...</> : <>Continue to workspace <ArrowRight size={19} /></>}
         </button>
       </form>
     </main>
@@ -1429,7 +1429,9 @@ function TravelRequestForm({
       {formStatus ? <p className="form-status" role="status">{formStatus}</p> : null}
       <div className="button-row">
         {onCancel ? <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button> : null}
-        <button className="primary-button" type="submit" disabled={submitting}><ClipboardCheck size={16} /> {submitting ? "Creating..." : submitLabel}</button>
+        <button className="primary-button" type="submit" disabled={submitting}>
+          {submitting ? <RefreshCw className="spin-icon" size={16} /> : <ClipboardCheck size={16} />} {submitting ? "Creating..." : submitLabel}
+        </button>
       </div>
     </form>
   );
@@ -2187,7 +2189,7 @@ function BuilderCommand({
       />
       <button className="secondary-button" type="button" onClick={onHelp}><MessageSquare size={16} /> Help me understand</button>
       <button className="primary-button" type="submit" disabled={assistantStatus === "responding"}>
-        {assistantStatus === "responding" ? "Updating..." : "Update Step"}
+        {assistantStatus === "responding" ? <><RefreshCw className="spin-icon" size={16} /> Updating...</> : "Update Step"}
       </button>
     </form>
   );
