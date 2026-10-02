@@ -138,6 +138,15 @@ class TravelStore:
                 """
             )
 
+            # Bolt: Optimize listing queries (list_trips, list_corporate_requests, list_audit_events)
+            # These indexes prevent O(N) full table scans and eliminate temporary B-tree allocations
+            # for sorting by created_at, speeding up dashboard loads significantly.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_created_at ON trips(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner_id_created_at ON trips(owner_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_created_at ON corporate_requests(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_owner_id_created_at ON corporate_requests(owner_id, created_at DESC)")
+
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:
