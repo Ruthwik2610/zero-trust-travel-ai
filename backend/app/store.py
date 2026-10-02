@@ -138,6 +138,15 @@ class TravelStore:
                 """
             )
 
+            # ⚡ Bolt: Performance Optimization
+            # Adding database indexes for frequently queried fields like foreign keys and filter columns.
+            # Expected Impact: O(log N) lookup time instead of full table scans (O(N)) for these fields.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_owner_id ON trips(owner_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_requests_owner_id ON corporate_requests(owner_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_corporate_reference_data_kind ON corporate_reference_data(kind);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_policy_activity_events_policy_id ON policy_activity_events(policy_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_request_id ON email_events(request_id);")
+
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:
