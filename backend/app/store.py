@@ -41,8 +41,7 @@ class TravelStore:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS trips (
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL DEFAULT '',
@@ -53,13 +52,24 @@ class TravelStore:
                     sensitive_payload_json TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
             self._ensure_column(conn, "trips", "owner_id", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "trips", "owner_department", "TEXT NOT NULL DEFAULT 'general'")
-            self._ensure_column(conn, "trips", "sensitive_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(
+                conn, "trips", "owner_department", "TEXT NOT NULL DEFAULT 'general'"
+            )
+            self._ensure_column(
+                conn, "trips", "sensitive_payload_json", "TEXT NOT NULL DEFAULT ''"
+            )
+
+            # Bolt optimization: Add indexes for faster list queries
             conn.execute(
-                """
+                "CREATE INDEX IF NOT EXISTS idx_trips_created_at ON trips(created_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trips_owner_id_created_at ON trips(owner_id, created_at DESC)"
+            )
+
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id TEXT PRIMARY KEY,
                     trip_id TEXT,
@@ -70,13 +80,13 @@ class TravelStore:
                     decision TEXT NOT NULL DEFAULT 'record',
                     created_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
             self._ensure_column(conn, "audit_events", "actor_id", "TEXT")
             self._ensure_column(conn, "audit_events", "purpose", "TEXT")
-            self._ensure_column(conn, "audit_events", "decision", "TEXT NOT NULL DEFAULT 'record'")
-            conn.execute(
-                """
+            self._ensure_column(
+                conn, "audit_events", "decision", "TEXT NOT NULL DEFAULT 'record'"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS corporate_requests (
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL DEFAULT '',
@@ -86,60 +96,63 @@ class TravelStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
+                """)
+
+            # Bolt optimization: Add indexes for faster list queries
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_corporate_requests_created_at ON corporate_requests(created_at DESC)"
             )
             conn.execute(
-                """
+                "CREATE INDEX IF NOT EXISTS idx_corporate_requests_owner_id_created_at ON corporate_requests(owner_id, created_at DESC)"
+            )
+
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS corporate_reference_data (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     kind TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS travelers (
                     id TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS policy_groups (
                     id TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS policy_activity_events (
                     id TEXT PRIMARY KEY,
                     policy_id TEXT,
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS email_events (
                     id TEXT PRIMARY KEY,
                     request_id TEXT,
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
 
-    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    def _ensure_column(
+        self, conn: sqlite3.Connection, table: str, column: str, definition: str
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
@@ -172,7 +185,9 @@ class TravelStore:
 
     def list_trips(self) -> list[Trip]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload_json FROM trips ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT payload_json FROM trips ORDER BY created_at DESC"
+            ).fetchall()
         return [Trip.model_validate_json(row["payload_json"]) for row in rows]
 
     def list_trips_for_owner(self, owner_id: str) -> list[Trip]:
@@ -183,7 +198,9 @@ class TravelStore:
             ).fetchall()
         return [Trip.model_validate_json(row["payload_json"]) for row in rows]
 
-    def save_audit_event(self, event: AuditEvent, conn: sqlite3.Connection | None = None) -> AuditEvent:
+    def save_audit_event(
+        self, event: AuditEvent, conn: sqlite3.Connection | None = None
+    ) -> AuditEvent:
         params = (
             event.id,
             event.trip_id,
@@ -207,7 +224,9 @@ class TravelStore:
 
     def list_audit_events(self) -> list[AuditEvent]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM audit_events ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM audit_events ORDER BY created_at DESC"
+            ).fetchall()
         return [
             AuditEvent(
                 id=row["id"],
@@ -227,7 +246,9 @@ class TravelStore:
         total_spend = 0
         usage: dict[str, dict[str, int | str]] = {}
         for trip in trips:
-            spend = sum(offer.price_usd for offer in trip.flight_offers + trip.hotel_offers)
+            spend = sum(
+                offer.price_usd for offer in trip.flight_offers + trip.hotel_offers
+            )
             total_spend += spend
             ref = pseudonymous_ref(trip.owner_id or trip.id)
             row = usage.setdefault(
@@ -242,7 +263,9 @@ class TravelStore:
             )
             row["trip_count"] = int(row["trip_count"]) + 1
             row["spend_usd"] = int(row["spend_usd"]) + spend
-            row["policy_flags"] = int(row["policy_flags"]) + (1 if trip.risk in {"medium", "high"} else 0)
+            row["policy_flags"] = int(row["policy_flags"]) + (
+                1 if trip.risk in {"medium", "high"} else 0
+            )
         return AdminSummary(
             total_trips=len(trips),
             draft_trips=sum(1 for trip in trips if trip.status == "draft"),
@@ -264,7 +287,9 @@ class TravelStore:
             ],
         )
 
-    def save_corporate_request(self, request: CorporateTravelRequest) -> CorporateTravelRequest:
+    def save_corporate_request(
+        self, request: CorporateTravelRequest
+    ) -> CorporateTravelRequest:
         payload = request.model_dump_json()
         with self._connect() as conn:
             conn.execute(
@@ -288,28 +313,43 @@ class TravelStore:
 
     def get_corporate_request(self, request_id: str) -> CorporateTravelRequest | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT payload_json FROM corporate_requests WHERE id = ?", (request_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload_json FROM corporate_requests WHERE id = ?",
+                (request_id,),
+            ).fetchone()
         if row is None:
             return None
         return CorporateTravelRequest.model_validate_json(row["payload_json"])
 
     def delete_corporate_request(self, request_id: str) -> bool:
         with self._connect() as conn:
-            cursor = conn.execute("DELETE FROM corporate_requests WHERE id = ?", (request_id,))
+            cursor = conn.execute(
+                "DELETE FROM corporate_requests WHERE id = ?", (request_id,)
+            )
         return cursor.rowcount > 0
 
     def list_corporate_requests(self) -> list[CorporateTravelRequest]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload_json FROM corporate_requests ORDER BY created_at DESC").fetchall()
-        return [CorporateTravelRequest.model_validate_json(row["payload_json"]) for row in rows]
+            rows = conn.execute(
+                "SELECT payload_json FROM corporate_requests ORDER BY created_at DESC"
+            ).fetchall()
+        return [
+            CorporateTravelRequest.model_validate_json(row["payload_json"])
+            for row in rows
+        ]
 
-    def list_corporate_requests_for_owner(self, owner_id: str) -> list[CorporateTravelRequest]:
+    def list_corporate_requests_for_owner(
+        self, owner_id: str
+    ) -> list[CorporateTravelRequest]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT payload_json FROM corporate_requests WHERE owner_id = ? ORDER BY created_at DESC",
                 (owner_id,),
             ).fetchall()
-        return [CorporateTravelRequest.model_validate_json(row["payload_json"]) for row in rows]
+        return [
+            CorporateTravelRequest.model_validate_json(row["payload_json"])
+            for row in rows
+        ]
 
     def save_reference_rows(self, kind: str, rows: list[dict[str, object]]) -> int:
         if not rows:
@@ -318,7 +358,12 @@ class TravelStore:
             for row in rows:
                 conn.execute(
                     "INSERT INTO corporate_reference_data (kind, payload_json) VALUES (?, ?)",
-                    (kind, json.dumps(row, separators=(",", ":"), sort_keys=True, default=str)),
+                    (
+                        kind,
+                        json.dumps(
+                            row, separators=(",", ":"), sort_keys=True, default=str
+                        ),
+                    ),
                 )
         return len(rows)
 
@@ -359,10 +404,23 @@ class TravelStore:
             by_status[request.status] = by_status.get(request.status, 0) + 1
             if request.travel_details.destination:
                 destinations[request.travel_details.destination] += 1
-            active_request = request.status not in {"Finalized", "Completed", "Cancelled"}
-            if active_request and request.generated_plan and request.generated_plan.budget_policy_check.approval_required:
+            active_request = request.status not in {
+                "Finalized",
+                "Completed",
+                "Cancelled",
+            }
+            if (
+                active_request
+                and request.generated_plan
+                and request.generated_plan.budget_policy_check.approval_required
+            ):
                 approval_required += 1
-            if active_request and request.generated_plan and request.generated_plan.travel_readiness.visa_status in {"Blocking Issue", "Needs Review"}:
+            if (
+                active_request
+                and request.generated_plan
+                and request.generated_plan.travel_readiness.visa_status
+                in {"Blocking Issue", "Needs Review"}
+            ):
                 visa_issues += 1
             if request.status in {"Finalized", "Completed"}:
                 finalized_requests.append(request)
@@ -377,7 +435,11 @@ class TravelStore:
             finalized=by_status["Finalized"] + by_status["Completed"],
             missing_info=by_status["Missing Info"] + by_status["Pending Details"],
             visa_issues=visa_issues,
-            average_handling_time_hours=round(sum(handling_hours) / len(handling_hours), 2) if handling_hours else 0,
+            average_handling_time_hours=(
+                round(sum(handling_hours) / len(handling_hours), 2)
+                if handling_hours
+                else 0
+            ),
             common_destinations=[
                 {"destination": destination, "count": count}
                 for destination, count in destinations.most_common(5)
@@ -402,14 +464,20 @@ class TravelStore:
 
     def get_traveler(self, traveler_id: str) -> TravelerProfile | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT payload_json FROM travelers WHERE id = ?", (traveler_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload_json FROM travelers WHERE id = ?", (traveler_id,)
+            ).fetchone()
         return TravelerProfile.model_validate_json(row["payload_json"]) if row else None
 
     def list_travelers(self) -> list[TravelerProfile]:
         self._seed_travelers_from_requests()
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload_json FROM travelers ORDER BY updated_at DESC").fetchall()
-        return [TravelerProfile.model_validate_json(row["payload_json"]) for row in rows]
+            rows = conn.execute(
+                "SELECT payload_json FROM travelers ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            TravelerProfile.model_validate_json(row["payload_json"]) for row in rows
+        ]
 
     def _seed_travelers_from_requests(self) -> None:
         existing = self._list_travelers_without_seed()
@@ -429,14 +497,34 @@ class TravelStore:
                     seat_preference="Aisle",
                     meal_preference="Gluten Free",
                     hotel_preference="Preferred corporate hotels near office",
-                    policy_notes=["Business class permitted for international flights over 6 hours."],
+                    policy_notes=[
+                        "Business class permitted for international flights over 6 hours."
+                    ],
                     loyalty_programs=[
-                        {"provider": "Delta SkyMiles", "tier": "Diamond Medallion", "account_ref": "On file"},
-                        {"provider": "Marriott Bonvoy", "tier": "Ambassador Elite", "account_ref": "On file"},
+                        {
+                            "provider": "Delta SkyMiles",
+                            "tier": "Diamond Medallion",
+                            "account_ref": "On file",
+                        },
+                        {
+                            "provider": "Marriott Bonvoy",
+                            "tier": "Ambassador Elite",
+                            "account_ref": "On file",
+                        },
                     ],
                     documents=[
-                        {"document_type": "passport", "label": "Passport", "status": "Ready", "redacted_value": "On file"},
-                        {"document_type": "known_traveler", "label": "Known Traveler Number", "status": "Ready", "redacted_value": "On file"},
+                        {
+                            "document_type": "passport",
+                            "label": "Passport",
+                            "status": "Ready",
+                            "redacted_value": "On file",
+                        },
+                        {
+                            "document_type": "known_traveler",
+                            "label": "Known Traveler Number",
+                            "status": "Ready",
+                            "redacted_value": "On file",
+                        },
                     ],
                     recent_trips=["San Francisco, USA", "London, UK", "New York, USA"],
                 )
@@ -448,7 +536,10 @@ class TravelStore:
                 continue
             document_status = "Ready"
             traveler_status = "Compliant"
-            if not request.traveller_details.passport_number and not request.traveller_details.passport_expiry:
+            if (
+                not request.traveller_details.passport_number
+                and not request.traveller_details.passport_expiry
+            ):
                 document_status = "Missing"
                 traveler_status = "Missing Passport"
             elif request.traveller_details.passport_expiry:
@@ -463,7 +554,11 @@ class TravelStore:
                 seat_preference=request.preferences.seat_preference,
                 meal_preference=request.preferences.meal_preference,
                 hotel_preference=request.preferences.hotel_preference,
-                policy_notes=[request.budgets.policy_notes] if request.budgets.policy_notes else [],
+                policy_notes=(
+                    [request.budgets.policy_notes]
+                    if request.budgets.policy_notes
+                    else []
+                ),
                 loyalty_programs=[],
                 documents=[
                     {
@@ -471,10 +566,16 @@ class TravelStore:
                         "label": "Passport",
                         "status": document_status,
                         "expires_at": request.traveller_details.passport_expiry,
-                        "redacted_value": "On file" if request.traveller_details.passport_number else None,
+                        "redacted_value": (
+                            "On file"
+                            if request.traveller_details.passport_number
+                            else None
+                        ),
                     }
                 ],
-                recent_trips=[f"{request.travel_details.origin or 'Origin'} to {request.travel_details.destination or 'Destination'}"],
+                recent_trips=[
+                    f"{request.travel_details.origin or 'Origin'} to {request.travel_details.destination or 'Destination'}"
+                ],
                 created_at=request.created_at,
                 updated_at=request.updated_at,
             )
@@ -483,8 +584,12 @@ class TravelStore:
 
     def _list_travelers_without_seed(self) -> list[TravelerProfile]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload_json FROM travelers ORDER BY updated_at DESC").fetchall()
-        return [TravelerProfile.model_validate_json(row["payload_json"]) for row in rows]
+            rows = conn.execute(
+                "SELECT payload_json FROM travelers ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            TravelerProfile.model_validate_json(row["payload_json"]) for row in rows
+        ]
 
     def save_policy_group(self, policy: PolicyGroup) -> PolicyGroup:
         with self._connect() as conn:
@@ -500,13 +605,17 @@ class TravelStore:
     def get_policy_group(self, policy_id: str) -> PolicyGroup | None:
         self._seed_policy_groups()
         with self._connect() as conn:
-            row = conn.execute("SELECT payload_json FROM policy_groups WHERE id = ?", (policy_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload_json FROM policy_groups WHERE id = ?", (policy_id,)
+            ).fetchone()
         return PolicyGroup.model_validate_json(row["payload_json"]) if row else None
 
     def list_policy_groups(self) -> list[PolicyGroup]:
         self._seed_policy_groups()
         with self._connect() as conn:
-            rows = conn.execute("SELECT payload_json FROM policy_groups ORDER BY updated_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT payload_json FROM policy_groups ORDER BY updated_at DESC"
+            ).fetchall()
         return [PolicyGroup.model_validate_json(row["payload_json"]) for row in rows]
 
     def save_policy_activity(self, event: PolicyActivityEvent) -> PolicyActivityEvent:
@@ -516,11 +625,18 @@ class TravelStore:
                 INSERT OR REPLACE INTO policy_activity_events (id, policy_id, payload_json, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (event.id, event.policy_id, event.model_dump_json(), event.created_at.isoformat()),
+                (
+                    event.id,
+                    event.policy_id,
+                    event.model_dump_json(),
+                    event.created_at.isoformat(),
+                ),
             )
         return event
 
-    def list_policy_activity(self, policy_id: str | None = None) -> list[PolicyActivityEvent]:
+    def list_policy_activity(
+        self, policy_id: str | None = None
+    ) -> list[PolicyActivityEvent]:
         self._seed_policy_groups()
         with self._connect() as conn:
             if policy_id:
@@ -529,18 +645,31 @@ class TravelStore:
                     (policy_id,),
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT payload_json FROM policy_activity_events ORDER BY created_at DESC").fetchall()
-        return [PolicyActivityEvent.model_validate_json(row["payload_json"]) for row in rows]
+                rows = conn.execute(
+                    "SELECT payload_json FROM policy_activity_events ORDER BY created_at DESC"
+                ).fetchall()
+        return [
+            PolicyActivityEvent.model_validate_json(row["payload_json"]) for row in rows
+        ]
 
-    def save_policy_revision(self, policy_id: str, revision: PolicyRevision, actor: str, activity: str) -> PolicyGroup | None:
+    def save_policy_revision(
+        self, policy_id: str, revision: PolicyRevision, actor: str, activity: str
+    ) -> PolicyGroup | None:
         policy = self.get_policy_group(policy_id)
         if policy is None:
             return None
-        revisions = [revision if existing.id == revision.id else existing for existing in policy.revisions]
-        updated = policy.model_copy(update={"revisions": revisions, "updated_at": revision.updated_at})
+        revisions = [
+            revision if existing.id == revision.id else existing
+            for existing in policy.revisions
+        ]
+        updated = policy.model_copy(
+            update={"revisions": revisions, "updated_at": revision.updated_at}
+        )
         self.save_policy_group(updated)
         self.save_policy_activity(
-            PolicyActivityEvent(policy_id=policy_id, actor=actor, activity=activity, status="SUCCESS")
+            PolicyActivityEvent(
+                policy_id=policy_id, actor=actor, activity=activity, status="SUCCESS"
+            )
         )
         return updated
 
@@ -551,7 +680,12 @@ class TravelStore:
                 INSERT OR REPLACE INTO email_events (id, request_id, payload_json, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (event.id, event.request_id, event.model_dump_json(), event.created_at.isoformat()),
+                (
+                    event.id,
+                    event.request_id,
+                    event.model_dump_json(),
+                    event.created_at.isoformat(),
+                ),
             )
         return event
 
@@ -563,12 +697,16 @@ class TravelStore:
                     (request_id,),
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT payload_json FROM email_events ORDER BY created_at DESC").fetchall()
+                rows = conn.execute(
+                    "SELECT payload_json FROM email_events ORDER BY created_at DESC"
+                ).fetchall()
         return [EmailEvent.model_validate_json(row["payload_json"]) for row in rows]
 
     def _seed_policy_groups(self) -> None:
         with self._connect() as conn:
-            count = conn.execute("SELECT COUNT(*) AS count FROM policy_groups").fetchone()["count"]
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM policy_groups"
+            ).fetchone()["count"]
         if count:
             return
         policy = PolicyGroup(
@@ -578,9 +716,18 @@ class TravelStore:
             status="Active",
             compliance_score=98.4,
             active_rules=[
-                {"label": "Flight Class", "value": "Business class allowed for international flights over 6 hours."},
-                {"label": "Lodging Cap", "value": "Flag stays above the configured nightly cap before booking."},
-                {"label": "Exceptions", "value": "Record external approval for bookings more than 25% above cap."},
+                {
+                    "label": "Flight Class",
+                    "value": "Business class allowed for international flights over 6 hours.",
+                },
+                {
+                    "label": "Lodging Cap",
+                    "value": "Flag stays above the configured nightly cap before booking.",
+                },
+                {
+                    "label": "Exceptions",
+                    "value": "Record external approval for bookings more than 25% above cap.",
+                },
             ],
             revisions=[
                 {
@@ -589,8 +736,16 @@ class TravelStore:
                     "status": "In Review",
                     "summary": "Update per-diems for APAC and adjust director business-class threshold.",
                     "proposed_rules": [
-                        {"label": "Singapore Per Diem", "value": "$115 USD", "status": "Changed"},
-                        {"label": "Flight Class", "value": "Director business class threshold reduced to 6 hours.", "status": "Changed"},
+                        {
+                            "label": "Singapore Per Diem",
+                            "value": "$115 USD",
+                            "status": "Changed",
+                        },
+                        {
+                            "label": "Flight Class",
+                            "value": "Director business class threshold reduced to 6 hours.",
+                            "status": "Changed",
+                        },
                     ],
                     "impact_analysis": "Projected annual travel spend increase is approximately 8.4% based on historical long-haul trips.",
                     "reviewer_comments": ["Finance review pending."],
