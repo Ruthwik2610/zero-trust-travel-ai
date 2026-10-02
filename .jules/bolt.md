@@ -1,0 +1,3 @@
+## 2026-06-07 - SQLite Missing Indexes
+**Learning:** The `TravelStore` backend raw SQLite implementation was creating tables but totally skipping standard indexing for highly queried columns (foreign keys like `owner_id` or timestamp columns like `created_at` or `updated_at`). This meant all "list by owner" or standard sort operations were scaling as O(N) full table scans instead of efficient O(log N) index scans.
+**Action:** Always verify that schema initialization in raw Python DB layers includes explicit `CREATE INDEX` logic alongside table creation, especially for sorting/filtering.
